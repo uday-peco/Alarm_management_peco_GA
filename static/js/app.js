@@ -269,8 +269,12 @@ const MAP_COLORS = {
 function initMap() {
   if (map) return;
   map = L.map('leaflet-map', { scrollWheelZoom: true }).setView([40.05, -75.35], 9);
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    { attribution: '© OpenStreetMap © CARTO', maxZoom: 19 }).addTo(map);
+  L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',    
+    {
+       attribution: '© OpenStreetMap © CARTO', 
+       maxZoom: 19 }
+      ).addTo(map);
   layer = L.layerGroup().addTo(map);
   renderMap();
 }
