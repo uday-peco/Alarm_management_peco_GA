@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PECO DA Fleet Intelligence</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- fallback loader (only shows when CSVs can't be fetched, e.g. file:// mode) -->
+<div class="loader-overlay" id="loader-overlay">
+  <div class="loader-box">
+     <button class="loader-close" onclick="dismissLoader()" title="Close">✕</button>  
+    <h2>Load fleet exports</h2>
+    <p>The app couldn't read the <b>Data/</b> folder directly — this happens when the file is opened without a local
+       server. Either launch with <b>VS Code Live Server</b>, or drop your CSV exports below
+       (<span class="mono">fci_export.csv</span>, <span class="mono">intelliruptors_export.csv</span>,
+       <span class="mono">recloser_export.csv</span>).</p>
+    <div class="drop-zone" id="drop-zone">Drag &amp; drop CSV files here, or click to browse</div>
+    <input type="file" id="file-input" accept=".csv" multiple style="display:none">
+    <div class="loader-status" id="loader-status"></div>
+    <button class="btn-reset" id="loader-continue" style="display:none;margin-top:14px" onclick="finishManualLoad()">Continue →</button>
+  </div>
+</div>
+
+<aside class="sidebar">
+  <div class="sb-logo"><span class="mark">◧</span>PECO&nbsp;<span>DA&nbsp;FLEET</span></div>
+  <nav class="sb-nav">
+    <div class="sb-item active" data-page="home"><span class="ic">▦</span>Home</div>
+    <div class="sb-item" data-page="devices"><span class="ic">▤</span>Devices</div>
+    <div class="sb-item" data-page="map"><span class="ic">◉</span>Map View</div>
+    <div class="sb-item sb-load" id="sb-load-data" style="display:none" onclick="showLoaderOverlay()"><span class="ic">⇪</span>Load Data</div>
+
+  </nav>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div class="workspace">PECO Grid Automation</div>
+    <div class="top-right">
+      <div class="data-badge"><span class="dot-live"></span>
+        <b id="badge-total" style="margin:0 3px">—</b> devices
+        <span class="muted" id="badge-detail" style="margin-left:6px"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+    <div class="breadcrumb"><span class="here" id="crumb">Fleet Overview</span></div>
+
+    <!-- ══ HOME ══ -->
+    <div class="page active" id="page-home">
+      <div class="kpi-row" id="kpi-row"></div>
+      <div class="cat-row" id="cat-row"></div>
+      <div class="grid">
+        <div class="card"><div class="card-head"><span class="ci">▦</span><span class="card-title">Fleet Health Score</span></div><div class="card-body"><div id="gauge"></div></div></div>
+        <div class="card"><div class="card-head"><span class="ci">▦</span><span class="card-title">Devices by Category</span></div><div class="card-body"><div id="cat-donut"></div></div></div>
+        <div class="card"><div class="card-head"><span class="ci">▦</span><span class="card-title">Comm Status</span></div><div class="card-body"><div id="comm-donut"></div></div></div>
+        <div class="card"><div class="card-head"><span class="ci">▦</span><span class="card-title">Devices by Substation</span></div><div class="card-body" style="align-items:stretch"><div id="substation-bars" style="width:100%"></div></div></div>
+        <div class="card"><div class="card-head"><span class="ci">▦</span><span class="card-title">Lifecycle Status</span></div><div class="card-body"><div id="life-donut"></div></div></div>
+        <div class="card"><div class="card-head"><span class="ci">▦</span><span class="card-title">Comm Provider</span></div><div class="card-body"><div id="prov-donut"></div></div></div>
+      </div>
+    </div>
+
+    <!-- ══ DEVICES — category-wide search ══ -->
+    <div class="page" id="page-devices">
+      <div class="filter-bar">
+        <div class="fg"><span class="fl">Search — Device / Product ID</span>
+          <input class="f-input wide" id="d-search" placeholder="Device ID, Product, location, substation, category…" oninput="renderDevices()"></div>
+        <div class="fg"><span class="fl">Category</span><select class="f-select" id="d-cat" onchange="renderDevices()"></select></div>
+        <div class="fg"><span class="fl">Comm Status</span><select class="f-select" id="d-comm" onchange="renderDevices()">
+          <option value="">All</option><option>Normal</option><option>Missing</option><option>Not in Service</option></select></div>
+        <div class="fg"><span class="fl">Lifecycle</span><select class="f-select" id="d-life" onchange="renderDevices()">
+          <option value="">All</option><option>Active</option><option>Removed</option><option>Inactive</option></select></div>
+        <div class="fg"><span class="fl">Provider</span><select class="f-select" id="d-prov" onchange="renderDevices()"></select></div>
+        <button class="btn-reset" onclick="resetDevices()">↺ Reset</button>
+      </div>
+      <div class="sec-head">
+        <div class="sec-title">Fleet Devices <span class="sec-hint">— click a row for full device details</span></div>
+        <div class="sec-count" id="d-count">—</div>
+      </div>
+      <div class="card" style="padding:0">
+        <div class="table-scroll"><table><thead><tr>
+          <th>Device ID</th><th>Category</th><th>Product</th><th>Substation</th>
+          <th>Comm Status</th><th>Lifecycle</th><th>Provider</th><th class="col-narrow"></th>
+        </tr></thead><tbody id="dev-tbody"></tbody></table></div>
+      </div>
+    </div>
+
+    <!-- ══ MAP ══ -->
+    <div class="page" id="page-map">
+      <div class="info-note">ℹ️ Plotting every device in the repository that carries LAT/LONG values in its export. Devices without coordinates are listed in the Devices tab and counted in the panel on the right.</div>
+      <div class="map-layout">
+        <div><div id="leaflet-map"></div></div>
+        <div class="map-side">
+          <div class="card">
+            <div class="card-head"><span class="ci">◉</span><span class="card-title" style="font-size:13px">Map Filters</span></div>
+            <div class="fg" style="margin-bottom:12px"><span class="fl">Color By</span>
+              <select class="f-select" id="m-color" onchange="renderMap()" style="min-width:0;width:100%">
+                <option value="category">Device Category</option>
+                <option value="commStatus">Comm Status</option>
+                <option value="lifecycle">Lifecycle</option></select></div>
+            <div class="fg" style="margin-bottom:12px"><span class="fl">Category</span>
+              <select class="f-select" id="m-cat" onchange="renderMap()" style="min-width:0;width:100%">
+                <option value="">All</option>
+                <option value="FCI">FCI</option>
+                <option value="IntelliRupter">IntelliRupters</option>
+                <option value="Recloser">Reclosers</option></select></div>
+            <div class="fg" style="margin-bottom:12px"><span class="fl">Comm Status</span>
+              <select class="f-select" id="m-comm" onchange="renderMap()" style="min-width:0;width:100%">
+                <option value="">All</option><option>Normal</option><option>Missing</option><option>Not in Service</option></select></div>
+            <div id="map-legend" style="margin-top:4px"></div>
+            <div id="map-stats" style="margin-top:12px;font-size:12px;color:var(--ink2)"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- device detail panel -->
+<div class="detail-backdrop" id="detail-backdrop" onclick="closeDetail()"></div>
+<aside class="detail-panel" id="detail-panel">
+  <button class="detail-close" onclick="closeDetail()" title="Close">✕</button>
+  <div id="detail-content"></div>
+</aside>
+
+<script src="js/dataLoader.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
