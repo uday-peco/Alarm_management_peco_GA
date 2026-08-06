@@ -1,0 +1,21 @@
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# VS Code local workspace settings
+.vscode/
+
+# Environment files / secrets
+.env
+.env.*
+!.env.example
+
+# Node dependencies, if you add Node/npm later
+node_modules/
+
+# Build output, if you add a build process later
+dist/
+build/
+
+# Log files
+*.log
