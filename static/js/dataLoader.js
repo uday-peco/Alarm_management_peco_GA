@@ -16,6 +16,51 @@ const SOURCES = [
   { key: 'Recloser',      label: 'Reclosers',      file: 'Data/recloser_export.csv',       color: '#b39ddb' },
 ];
 
+/* ═══════════════════════════════════════════════════════════
+   CFCI Smart Controller telemetry export
+
+   Expected file:
+   Data/cfci_telemetry.csv
+
+   The telemetry file uses this header:
+   "Device ID - Session"
+
+   Example:
+   30312-1 -> match key 30312
+   30574-1 -> match key 30574
+   ═══════════════════════════════════════════════════════════ */
+
+const CFCI_TELEMETRY_FILE = "Data/cfci_telemetry.csv";
+
+/*
+  Removes the session suffix from a controller/device ID.
+
+  Examples:
+  "30312-1" -> "30312"
+  "30312-2" -> "30312"
+  "30312"   -> "30312"
+
+  This is used for both the telemetry CSV ID and the fleet-device ID,
+  so device records can be matched consistently.
+*/
+function baseDeviceId(value) {
+  /*
+    Examples:
+    "30312-1"              -> "30312"
+    "30312 - 1"            -> "30312"
+    " 30312-1 "            -> "30312"
+    "30312"                -> "30312"
+    "30312-1.0"            -> "30312"
+  */
+  return String(value ?? "")
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .split(/\s*-\s*/)[0]
+    .trim()
+    .replace(/\.0$/, "")
+    .toUpperCase();
+}
+
 /* ── RFC-4180-ish CSV parser (handles quoted fields, CRLF) ── */
 function parseCSV(text) {
   const rows = []; let row = [], field = '', inQ = false;
@@ -39,10 +84,24 @@ function parseCSV(text) {
 
 function rowsToObjects(rows) {
   if (!rows.length) return [];
-  const hdr = rows[0].map(h => h.trim());
+
+  /*
+    Removes leading/trailing spaces and removes a hidden UTF-8 BOM
+    character that Excel exports sometimes add to the first header.
+  */
+  const hdr = rows[0].map(h =>
+    String(h ?? "")
+      .replace(/^\uFEFF/, "")
+      .trim()
+  );
+
   return rows.slice(1).map(r => {
     const o = {};
-    hdr.forEach((h, i) => o[h] = (r[i] ?? '').trim());
+
+    hdr.forEach((h, i) => {
+      o[h] = String(r[i] ?? "").trim();
+    });
+
     return o;
   });
 }
@@ -94,7 +153,140 @@ function dedupe(records) {
 }
 
 /* ── loading ── */
-const Fleet = { devices: [], sourceStatus: {}, mode: 'fetch' };
+const Fleet = {
+  devices: [],
+  sourceStatus: {},
+  mode: "fetch",
+
+  /*
+    Stores full CFCI telemetry CSV rows indexed by base device ID.
+
+    Example:
+    Fleet.cfciTelemetryByDeviceId["30312"]
+  */
+  cfciTelemetryByDeviceId: {},
+
+  cfciTelemetryStatus: {
+    loaded: false,
+    rows: 0,
+    matchedDevices: 0,
+    error: null
+  }
+};
+/* ═══════════════════════════════════════════════════════════
+   Load optional CFCI Smart Controller telemetry CSV
+   ═══════════════════════════════════════════════════════════ */
+
+async function loadCfciTelemetry() {
+  try {
+    const response = await fetch(CFCI_TELEMETRY_FILE, {
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const text = await response.text();
+    const rows = rowsToObjects(parseCSV(text));
+
+    if (!rows.length) {
+      throw new Error("The CFCI telemetry CSV has no data rows.");
+    }
+
+    /*
+      Find the device/session ID header safely.
+
+      This allows for:
+      - Device ID - Session
+      - hidden BOM character before the first header
+      - minor capitalization/spacing changes
+    */
+    const headers = Object.keys(rows[0]);
+
+    const deviceIdHeader = headers.find(header =>
+      header
+        .replace(/^\uFEFF/, "")
+        .trim()
+        .toLowerCase() === "device id - session"
+    );
+
+    if (!deviceIdHeader) {
+      console.error("CFCI telemetry headers found:", headers);
+
+      throw new Error(
+        'Could not find required telemetry column "Device ID - Session". ' +
+        "Check the CSV header exactly."
+      );
+    }
+
+    const indexed = {};
+    let skippedRows = 0;
+
+    rows.forEach(row => {
+      const sessionId = row[deviceIdHeader];
+      const key = baseDeviceId(sessionId);
+
+      if (!key) {
+        skippedRows++;
+        return;
+      }
+
+      indexed[key] = {
+        ...row,
+        __sessionId: sessionId,
+        __baseDeviceId: key
+      };
+    });
+
+    Fleet.cfciTelemetryByDeviceId = indexed;
+
+    Fleet.cfciTelemetryStatus = {
+      loaded: true,
+      rows: Object.keys(indexed).length,
+      matchedDevices: 0,
+      error: null
+    };
+
+    console.log(
+      `Loaded ${Object.keys(indexed).length} CFCI telemetry records.`
+    );
+
+    console.log(
+      "Example CFCI telemetry keys:",
+      Object.keys(indexed).slice(0, 10)
+    );
+
+    console.log(
+      "Example telemetry record:",
+      indexed[Object.keys(indexed)[0]]
+    );
+
+    if (skippedRows) {
+      console.warn(
+        `Skipped ${skippedRows} CFCI telemetry row(s) because they had no Device ID - Session value.`
+      );
+    }
+
+    return true;
+  } catch (error) {
+    Fleet.cfciTelemetryByDeviceId = {};
+
+    Fleet.cfciTelemetryStatus = {
+      loaded: false,
+      rows: 0,
+      matchedDevices: 0,
+      error: String(error)
+    };
+
+    console.error(
+      `CFCI telemetry was not loaded from ${CFCI_TELEMETRY_FILE}:`,
+      error
+    );
+
+    return false;
+  }
+}
 
 async function loadAllCSVs() {
   let anyLoaded = false, fetchWorked = false;
@@ -115,11 +307,26 @@ async function loadAllCSVs() {
   }
   if (!fetchWorked) {
     Fleet.mode = 'manual';
-    document.getElementById('sb-load-data').style.display = 'flex';   // sidebar re-open option
+    document.getElementById('sb-load-data').style.display = 'flex';
     document.querySelector('.dot-live').classList.add('err');
     showLoaderOverlay();
     return false;
   }
+
+  /*
+    This is optional. The dashboard will still load if the CFCI telemetry
+    file is absent, but CFCI telemetry details will not appear.
+  */
+  await loadCfciTelemetry();
+
+  /*
+    Count how many current fleet devices have a matching telemetry record.
+  */
+  Fleet.cfciTelemetryStatus.matchedDevices = Fleet.devices.filter(device => {
+    const deviceKey = baseDeviceId(device.id);
+    return Boolean(Fleet.cfciTelemetryByDeviceId[deviceKey]);
+  }).length;
+
   return anyLoaded;
 }
 

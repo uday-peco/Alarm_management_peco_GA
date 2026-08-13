@@ -7,6 +7,1455 @@ const countBy = (a, f) => a.reduce((m, x) => { const k = f(x); m[k] = (m[k] || 0
 const catMeta = k => SOURCES.find(s => s.key === k);
 const tagCls  = { 'Normal': 'normal', 'Missing': 'missing', 'Not in Service': 'nis' };
 const lifeCls = { 'Active': 'active', 'Removed': 'removed', 'Inactive': 'inactive' };
+/* ═══════════════════════════════════════════════════════════
+   CFCI Smart Controller telemetry helpers
+   ═══════════════════════════════════════════════════════════ */
+
+/*
+  Finds the telemetry record for the selected fleet device.
+
+  Example:
+  Fleet device ID:      30312-1
+  Telemetry session ID: 30312-1
+  Join key:             30312
+*/
+function getCfciTelemetry(device) {
+  if (!device || !Fleet.cfciTelemetryByDeviceId) return null;
+
+  const key = baseDeviceId(device.id);
+  const telemetry = Fleet.cfciTelemetryByDeviceId[key] || null;
+
+  console.log("CFCI telemetry lookup:", {
+    fleetDeviceId: device.id,
+    lookupKey: key,
+    found: Boolean(telemetry),
+    telemetrySessionId: telemetry?.__sessionId || null
+  });
+
+  return telemetry;
+}
+
+/* Determines whether a CSV field has a usable value. */
+function hasTelemetryValue(value) {
+  return (
+    value !== undefined &&
+    value !== null &&
+    String(value).trim() !== "" &&
+    String(value).trim() !== "—"
+  );
+}
+
+/* Shows a useful fallback instead of blank values. */
+function formatTelemetryValue(value, suffix = "") {
+  if (!hasTelemetryValue(value)) {
+    return "Not reported";
+  }
+
+  return `${value}${suffix}`;
+}
+
+/*
+  Uses the readable "(time)" column where possible.
+
+  Example:
+  "FCI-1 Routine Data Timestamp (time)"
+  is more useful than the raw epoch value:
+  "FCI-1 Routine Data Timestamp"
+*/
+function telemetryTime(telemetry, fieldName) {
+  return (
+    telemetry[`${fieldName} (time)`] ||
+    telemetry[fieldName] ||
+    null
+  );
+}
+
+/*
+  Shows one individual FCI channel, such as FCI-1, FCI-2, or FCI-3.
+
+  The function does not show completely empty channels.
+*/
+function renderCfciChannel(telemetry, channelNumber) {
+  const prefix = `FCI-${channelNumber}`;
+
+  const routineTimestamp = telemetryTime(
+    telemetry,
+    `${prefix} Routine Data Timestamp`
+  );
+
+  const serialAddress = telemetry[`${prefix} Serial Address`];
+  const signalStrength = telemetry[`${prefix} Last Receive Signal Strength`];
+
+  const actualCurrent = telemetry[`${prefix} Actual Current`];
+  const averageCurrent = telemetry[`${prefix} Average Current (Amps)`];
+  const peakCurrent = telemetry[`${prefix} Peak Current (Amps)`];
+  const minimumCurrent = telemetry[`${prefix} Minimum Current (Amps)`];
+
+  const ambientTemperature = telemetry[`${prefix} Ambient Temperature`];
+  const conductorTemperature = telemetry[`${prefix} Conductor Temperature`];
+  const maximumConductorTemperature =
+    telemetry[`${prefix} Maximum Conductor Temperature`];
+
+  const momentaryFaultCount =
+    telemetry[`${prefix} Momentary Fault Count`];
+
+  const permanentFaultCount =
+    telemetry[`${prefix} Permanent Fault Count`];
+
+  const retryCounter =
+    telemetry[`${prefix} RF Transmission Retry Counter`];
+
+  const lastFaultTimestamp = telemetryTime(
+    telemetry,
+    `${prefix} Last Fault Timestamp`
+  );
+
+  const lastFaultCurrent =
+    telemetry[`${prefix} Last Fault Current (Amps)`];
+
+  const lastFaultDuration =
+    telemetry[`${prefix} Last Fault Duration (mSec)`];
+
+  const tripLevel = telemetry[`${prefix} Trip Level`];
+
+  const lossOfVoltage = telemetryTime(
+    telemetry,
+    `${prefix} Loss of Voltage Timestamp`
+  );
+
+  const lossOfCurrent = telemetryTime(
+    telemetry,
+    `${prefix} Loss of Current Timestamp`
+  );
+
+  /*
+    Do not show an FCI panel if the telemetry export has no values
+    for that channel.
+  */
+  const channelHasData = [
+    routineTimestamp,
+    serialAddress,
+    signalStrength,
+    actualCurrent,
+    averageCurrent,
+    peakCurrent,
+    momentaryFaultCount,
+    permanentFaultCount
+  ].some(hasTelemetryValue);
+
+  if (!channelHasData) return "";
+
+  const row = (label, value, suffix = "", cls = "") => `
+    <div class="cfci-row">
+      <span class="cfci-label">${label}</span>
+      <span class="cfci-value ${cls}">
+        ${formatTelemetryValue(value, suffix)}
+      </span>
+    </div>
+  `;
+
+  return `
+    <details class="cfci-channel" ${channelNumber <= 3 ? "open" : ""}>
+      <summary>
+        <span>${prefix}</span>
+        <span class="cfci-channel-summary">
+          ${hasTelemetryValue(actualCurrent)
+            ? `${actualCurrent} A`
+            : "Telemetry available"}
+        </span>
+      </summary>
+
+      <div class="cfci-channel-body">
+        <div class="cfci-group-title">Communication</div>
+        ${row("Routine Data", routineTimestamp, "", "mono")}
+        ${row("Signal Strength", signalStrength)}
+        ${row("RF Retry Counter", retryCounter)}
+        ${row("Serial Address", serialAddress, "", "mono")}
+
+        <div class="cfci-group-title">Electrical Conditions</div>
+        ${row("Actual Current", actualCurrent, " A")}
+        ${row("Average Current", averageCurrent, " A")}
+        ${row("Peak Current", peakCurrent, " A")}
+        ${row("Minimum Current", minimumCurrent, " A")}
+        ${row("Trip Level", tripLevel, " A")}
+
+        <div class="cfci-group-title">Fault Activity</div>
+        ${row("Momentary Fault Count", momentaryFaultCount)}
+        ${row("Permanent Fault Count", permanentFaultCount)}
+        ${row("Last Fault Time", lastFaultTimestamp, "", "mono")}
+        ${row("Last Fault Current", lastFaultCurrent, " A")}
+        ${row("Last Fault Duration", lastFaultDuration, " mSec")}
+        ${row("Loss of Voltage", lossOfVoltage, "", "mono")}
+        ${row("Loss of Current", lossOfCurrent, "", "mono")}
+
+        <div class="cfci-group-title">Thermal Conditions</div>
+        ${row("Ambient Temperature", ambientTemperature)}
+        ${row("Conductor Temperature", conductorTemperature)}
+        ${row("Maximum Conductor Temp.", maximumConductorTemperature)}
+      </div>
+    </details>
+  `;
+}
+
+/*
+  Creates the full CFCI telemetry section in the device detail panel.
+*/
+function renderCfciTelemetryDetails(device) {
+  const telemetry = getCfciTelemetry(device);
+
+  if (!telemetry) {
+    return `
+      <div class="d-section">
+        <h4>CFCI Smart Controller Telemetry</h4>
+        <div class="d-row">
+          <span class="dk">Telemetry Status</span>
+          <span class="dv none">
+            No telemetry record was found for base device ID
+            ${baseDeviceId(device.id)}.
+          </span>
+        </div>
+      </div>
+    `;
+  }
+
+  const channelHtml = Array.from(
+    { length: 12 },
+    (_, index) => renderCfciChannel(telemetry, index + 1)
+  ).join("");
+
+  const controllerTime =
+    telemetry["Smart Controller Time (time)"] ||
+    telemetry["Smart Controller Time"];
+
+  const controllerFirmware =
+    telemetry["Smart Controller FW Version"];
+
+  const controllerFirmwareId =
+    telemetry["Smart Controller FW ID"];
+
+  const controllerSerial =
+    telemetry["Smart Controller Serial Number"];
+
+  const commLost =
+    telemetry["CommLost Diagnostic"];
+
+  const reportTime =
+    telemetry["Report Time (Epoch milliseconds) (time)"] ||
+    telemetry["Report Time (Epoch milliseconds)"];
+
+  return `
+    <div class="d-section cfci-telemetry-section">
+      <h4>CFCI Smart Controller Telemetry</h4>
+
+      <div class="cfci-controller-grid">
+        <div class="cfci-controller-item">
+          <span>Telemetry ID</span>
+          <b class="mono">${telemetry.__sessionId || "—"}</b>
+        </div>
+
+        <div class="cfci-controller-item">
+          <span>Controller Serial</span>
+          <b class="mono">${formatTelemetryValue(controllerSerial)}</b>
+        </div>
+
+        <div class="cfci-controller-item">
+          <span>Firmware Version</span>
+          <b>${formatTelemetryValue(controllerFirmware)}</b>
+        </div>
+
+        <div class="cfci-controller-item">
+          <span>Firmware ID</span>
+          <b>${formatTelemetryValue(controllerFirmwareId)}</b>
+        </div>
+
+        <div class="cfci-controller-item">
+          <span>Controller Time</span>
+          <b class="mono">${formatTelemetryValue(controllerTime)}</b>
+        </div>
+
+        <div class="cfci-controller-item">
+          <span>Comm Lost Diagnostic</span>
+          <b>${formatTelemetryValue(commLost)}</b>
+        </div>
+
+        <div class="cfci-controller-item">
+          <span>Report Time</span>
+          <b class="mono">${formatTelemetryValue(reportTime)}</b>
+        </div>
+      </div>
+
+      <div class="cfci-channel-list">
+        ${channelHtml || `
+          <div class="muted" style="padding:8px 0">
+            This telemetry record contains no populated FCI channel fields.
+          </div>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   FCI HEALTH SCORE
+   -----------------------------------------------------------
+   Initial operational scoring model.
+
+   Score = (
+     Communication × 35%
+     + Fault / Reliability × 30%
+     + Thermal × 20%
+     + Electrical / Load × 10%
+     + Configuration × 5%
+   )
+
+   IMPORTANT:
+   These thresholds are initial UI/dashboard defaults. Confirm
+   them with Protection Engineering, Communications Engineering,
+   and the CFCI vendor before using them for formal operations.
+   ═══════════════════════════════════════════════════════════ */
+
+const FCI_HEALTH_WEIGHTS = {
+  communication: 0.35,
+  fault: 0.30,
+  thermal: 0.20,
+  electrical: 0.10,
+  configuration: 0.05
+};
+
+/*
+  Initial score thresholds.
+
+  The supplied sample data appears to use Fahrenheit-like
+  temperature values, such as 86, 95, etc. Verify the actual
+  unit before operationalizing thermal thresholds.
+*/
+const FCI_HEALTH_THRESHOLDS = {
+  telemetryAgeHours: {
+    healthy: 24,
+    watch: 72,
+    warning: 168
+  },
+
+  /*
+    RSSI-like values. Confirm exact signal field scale with
+    the CFCI/vendor team before applying as approved thresholds.
+  */
+  signalStrength: {
+    strong: -80,
+    acceptable: -90,
+    weak: -100
+  },
+
+  /*
+    Retry counter may be cumulative. For now this is only a
+    snapshot evaluation. A future Databricks history table
+    should calculate retry counter increase/rate over time.
+  */
+  retryCounter: {
+    low: 0,
+    watch: 5,
+    warning: 20
+  },
+
+  /*
+    Example Fahrenheit-oriented thresholds.
+    Validate with engineering/vendor specifications.
+  */
+  conductorTemp: {
+    healthy: 140,
+    watch: 165,
+    warning: 190
+  },
+
+  thermalDelta: {
+    healthy: 25,
+    watch: 45,
+    warning: 65
+  },
+
+  peakTripRatio: {
+    healthy: 0.50,
+    watch: 0.75,
+    warning: 1.00
+  },
+
+  faultAgeHours: {
+    recentCritical: 24,
+    recentWarning: 24 * 7,
+    recentWatch: 24 * 30
+  }
+};
+
+/* Converts text/numeric values safely to a number. */
+function toNumber(value) {
+  if (
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    String(value).trim() === ""
+  ) {
+    return null;
+  }
+
+  const parsed = Number(String(value).replace(/,/g, "").trim());
+
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/* Keeps component scores between 0 and 10. */
+function clampScore(value) {
+  return Math.max(0, Math.min(10, value));
+}
+
+/* Average only the values that exist. */
+function averageScores(scores) {
+  const valid = scores.filter(value =>
+    value !== undefined &&
+    value !== null &&
+    Number.isFinite(value)
+  );
+
+  if (!valid.length) return null;
+
+  return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+}
+
+/*
+  Supports readable timestamps from the "(time)" columns.
+
+  Examples:
+  2026-08-13 11:46:40.979
+  2026-08-13T11:46:40.979
+*/
+function parseTelemetryDate(value) {
+  if (!hasTelemetryValue(value)) return null;
+
+  const text = String(value).trim();
+
+  /*
+    Some browsers parse "YYYY-MM-DD HH:mm:ss" inconsistently.
+    Convert the space between date/time into a T first.
+  */
+  const normalized = text.replace(
+    /^(\d{4}-\d{2}-\d{2})\s/,
+    "$1T"
+  );
+
+  const date = new Date(normalized);
+
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function hoursSince(value) {
+  const date = parseTelemetryDate(value);
+
+  if (!date) return null;
+
+  return (Date.now() - date.getTime()) / (1000 * 60 * 60);
+}
+
+function daysSince(value) {
+  const hours = hoursSince(value);
+
+  return hours === null ? null : hours / 24;
+}
+
+function displayNumber(value, decimals = 1) {
+  const number = toNumber(value);
+
+  return number === null ? "Not reported" : number.toFixed(decimals);
+}
+
+function displayHours(value) {
+  if (value === null || !Number.isFinite(value)) {
+    return "Not reported";
+  }
+
+  if (value < 1) {
+    return `${Math.max(0, Math.round(value * 60))} min`;
+  }
+
+  if (value < 48) {
+    return `${value.toFixed(1)} hr`;
+  }
+
+  return `${(value / 24).toFixed(1)} days`;
+}
+
+/*
+  Returns score color based on requested ranges:
+
+  7–10: green
+  5–7: yellow
+  3–5: orange
+  0–3: red
+*/
+function fciScoreColor(score) {
+  if (score === null || !Number.isFinite(score)) return "#63717b";
+
+  if (score >= 7) return "#47dc93";
+  if (score >= 5) return "#f4d35e";
+  if (score >= 3) return "#f4a64e";
+
+  return "#ff6570";
+}
+
+function fciScoreLabel(score) {
+  if (score === null || !Number.isFinite(score)) {
+    return "Unknown";
+  }
+
+  if (score >= 7) return "Healthy";
+  if (score >= 5) return "Watch";
+  if (score >= 3) return "Warning";
+
+  return "Critical";
+}
+
+/*
+  Gets every populated CFCI channel for one Smart Controller.
+*/
+function getPopulatedCfciChannels(telemetry) {
+  const channels = [];
+
+  for (let channel = 1; channel <= 12; channel++) {
+    const prefix = `FCI-${channel}`;
+
+    const values = {
+      channel,
+
+      routineTime: telemetryTime(
+        telemetry,
+        `${prefix} Routine Data Timestamp`
+      ),
+
+      signalStrength:
+        telemetry[`${prefix} Last Receive Signal Strength`],
+
+      retryCounter:
+        telemetry[`${prefix} RF Transmission Retry Counter`],
+
+      momentaryFaultCount:
+        telemetry[`${prefix} Momentary Fault Count`],
+
+      permanentFaultCount:
+        telemetry[`${prefix} Permanent Fault Count`],
+
+      lastFaultTime: telemetryTime(
+        telemetry,
+        `${prefix} Last Fault Timestamp`
+      ),
+
+      lastPermanentTime: telemetryTime(
+        telemetry,
+        `${prefix} Last Permanent Timestamp`
+      ),
+
+      lastFaultCurrent:
+        telemetry[`${prefix} Last Fault Current (Amps)`],
+
+      conductorTemp:
+        telemetry[`${prefix} Conductor Temperature`],
+
+      maxConductorTemp:
+        telemetry[`${prefix} Maximum Conductor Temperature`],
+
+      ambientTemp:
+        telemetry[`${prefix} Ambient Temperature`],
+
+      maxAmbientTemp:
+        telemetry[`${prefix} Maximum Ambient Temperature`],
+
+      actualCurrent:
+        telemetry[`${prefix} Actual Current`],
+
+      peakCurrent:
+        telemetry[`${prefix} Peak Current (Amps)`],
+
+      tripLevel:
+        telemetry[`${prefix} Trip Level`],
+
+      lossCurrentTime: telemetryTime(
+        telemetry,
+        `${prefix} Loss of Current Timestamp`
+      ),
+
+      lossVoltageTime: telemetryTime(
+        telemetry,
+        `${prefix} Loss of Voltage Timestamp`
+      ),
+
+      serialAddress:
+        telemetry[`${prefix} Serial Address`]
+    };
+
+    const hasChannelData = [
+      values.routineTime,
+      values.signalStrength,
+      values.actualCurrent,
+      values.peakCurrent,
+      values.momentaryFaultCount,
+      values.permanentFaultCount,
+      values.serialAddress
+    ].some(hasTelemetryValue);
+
+    if (hasChannelData) {
+      channels.push(values);
+    }
+  }
+
+  return channels;
+}
+
+/*
+  Finds a worst-case / highest-impact value from a channel list.
+*/
+function maxNumberFromChannels(channels, field) {
+  const values = channels
+    .map(channel => toNumber(channel[field]))
+    .filter(value => value !== null);
+
+  return values.length ? Math.max(...values) : null;
+}
+
+function minNumberFromChannels(channels, field) {
+  const values = channels
+    .map(channel => toNumber(channel[field]))
+    .filter(value => value !== null);
+
+  return values.length ? Math.min(...values) : null;
+}
+
+function newestTimestampFromChannels(channels, fields) {
+  const dates = [];
+
+  channels.forEach(channel => {
+    fields.forEach(field => {
+      const date = parseTelemetryDate(channel[field]);
+
+      if (date) {
+        dates.push(date);
+      }
+    });
+  });
+
+  if (!dates.length) return null;
+
+  const latest = new Date(Math.max(...dates.map(date => date.getTime())));
+
+  return latest.toISOString();
+}
+
+/*
+  Component: Communication Health
+
+  Inputs:
+  - telemetry/routine-data age
+  - weakest signal strength
+  - highest RF retry count
+  - CommLost Diagnostic
+*/
+function calculateCommunicationScore(telemetry, channels) {
+  const newestRoutineTime = newestTimestampFromChannels(
+    channels,
+    ["routineTime"]
+  );
+
+  const telemetryAgeHours = hoursSince(newestRoutineTime);
+
+  let freshnessScore = null;
+
+  if (telemetryAgeHours !== null) {
+    const t = FCI_HEALTH_THRESHOLDS.telemetryAgeHours;
+
+    if (telemetryAgeHours <= t.healthy) freshnessScore = 10;
+    else if (telemetryAgeHours <= t.watch) freshnessScore = 7;
+    else if (telemetryAgeHours <= t.warning) freshnessScore = 4;
+    else freshnessScore = 0;
+  }
+
+  const weakestSignal = minNumberFromChannels(
+    channels,
+    "signalStrength"
+  );
+
+  let signalScore = null;
+
+  if (weakestSignal !== null) {
+    const s = FCI_HEALTH_THRESHOLDS.signalStrength;
+
+    if (weakestSignal >= s.strong) signalScore = 10;
+    else if (weakestSignal >= s.acceptable) signalScore = 7;
+    else if (weakestSignal >= s.weak) signalScore = 4;
+    else signalScore = 1;
+  }
+
+  const highestRetryCounter = maxNumberFromChannels(
+    channels,
+    "retryCounter"
+  );
+
+  let retryScore = null;
+
+  if (highestRetryCounter !== null) {
+    const r = FCI_HEALTH_THRESHOLDS.retryCounter;
+
+    if (highestRetryCounter <= r.low) retryScore = 10;
+    else if (highestRetryCounter <= r.watch) retryScore = 7;
+    else if (highestRetryCounter <= r.warning) retryScore = 4;
+    else retryScore = 1;
+  }
+
+  const commLostRaw = telemetry["CommLost Diagnostic"];
+  const commLost = toNumber(commLostRaw);
+
+  let commLostScore = null;
+
+  if (commLost !== null) {
+    commLostScore = commLost === 0 ? 10 : 0;
+  }
+
+  const score = averageScores([
+    freshnessScore,
+    signalScore,
+    retryScore,
+    commLostScore
+  ]);
+
+  return {
+    score,
+    telemetryAgeHours,
+    freshnessScore,
+    weakestSignal,
+    signalScore,
+    highestRetryCounter,
+    retryScore,
+    commLostRaw,
+    commLostScore
+  };
+}
+
+/*
+  Component: Fault / Reliability Health
+
+  Important:
+  Fault counts are snapshot counters. Long term, calculate the
+  counter deltas in Databricks to identify newly occurring faults.
+*/
+function calculateFaultScore(channels) {
+  const permanentFaultCount = maxNumberFromChannels(
+    channels,
+    "permanentFaultCount"
+  );
+
+  const momentaryFaultCount = maxNumberFromChannels(
+    channels,
+    "momentaryFaultCount"
+  );
+
+  const newestFaultTime = newestTimestampFromChannels(
+    channels,
+    ["lastFaultTime", "lastPermanentTime"]
+  );
+
+  const lastFaultAgeHours = hoursSince(newestFaultTime);
+
+  const highestFaultCurrent = maxNumberFromChannels(
+    channels,
+    "lastFaultCurrent"
+  );
+
+  let permanentScore = null;
+
+  if (permanentFaultCount !== null) {
+    if (permanentFaultCount === 0) permanentScore = 10;
+    else if (permanentFaultCount === 1) permanentScore = 5;
+    else permanentScore = 0;
+  }
+
+  let momentaryScore = null;
+
+  if (momentaryFaultCount !== null) {
+    if (momentaryFaultCount === 0) momentaryScore = 10;
+    else if (momentaryFaultCount <= 3) momentaryScore = 7;
+    else if (momentaryFaultCount <= 10) momentaryScore = 4;
+    else momentaryScore = 1;
+  }
+
+  let recencyScore = null;
+
+  if (lastFaultAgeHours !== null) {
+    const t = FCI_HEALTH_THRESHOLDS.faultAgeHours;
+
+    if (lastFaultAgeHours > t.recentWatch) recencyScore = 10;
+    else if (lastFaultAgeHours > t.recentWarning) recencyScore = 7;
+    else if (lastFaultAgeHours > t.recentCritical) recencyScore = 4;
+    else recencyScore = 1;
+  }
+
+  const score = averageScores([
+    permanentScore,
+    momentaryScore,
+    recencyScore
+  ]);
+
+  return {
+    score,
+    permanentFaultCount,
+    permanentScore,
+    momentaryFaultCount,
+    momentaryScore,
+    newestFaultTime,
+    lastFaultAgeHours,
+    recencyScore,
+    highestFaultCurrent
+  };
+}
+
+/*
+  Component: Thermal Health
+
+  Inputs:
+  - maximum conductor temperature
+  - maximum conductor-to-ambient thermal delta
+*/
+function calculateThermalScore(channels) {
+  const maxConductorTemp = maxNumberFromChannels(
+    channels,
+    "maxConductorTemp"
+  );
+
+  const maxCurrentConductorTemp = maxNumberFromChannels(
+    channels,
+    "conductorTemp"
+  );
+
+  const maxAmbientTemp = maxNumberFromChannels(
+    channels,
+    "maxAmbientTemp"
+  );
+
+  const maxCurrentAmbientTemp = maxNumberFromChannels(
+    channels,
+    "ambientTemp"
+  );
+
+  /*
+    Use current values where available. Otherwise use max values.
+    This is an approximation because max conductor and max ambient
+    may not have occurred at the same timestamp.
+  */
+  const conductorForDelta =
+    maxCurrentConductorTemp ?? maxConductorTemp;
+
+  const ambientForDelta =
+    maxCurrentAmbientTemp ?? maxAmbientTemp;
+
+  const thermalDelta =
+    conductorForDelta !== null && ambientForDelta !== null
+      ? conductorForDelta - ambientForDelta
+      : null;
+
+  let temperatureScore = null;
+
+  if (maxConductorTemp !== null) {
+    const t = FCI_HEALTH_THRESHOLDS.conductorTemp;
+
+    if (maxConductorTemp <= t.healthy) temperatureScore = 10;
+    else if (maxConductorTemp <= t.watch) temperatureScore = 7;
+    else if (maxConductorTemp <= t.warning) temperatureScore = 4;
+    else temperatureScore = 1;
+  }
+
+  let deltaScore = null;
+
+  if (thermalDelta !== null) {
+    const d = FCI_HEALTH_THRESHOLDS.thermalDelta;
+
+    if (thermalDelta <= d.healthy) deltaScore = 10;
+    else if (thermalDelta <= d.watch) deltaScore = 7;
+    else if (thermalDelta <= d.warning) deltaScore = 4;
+    else deltaScore = 1;
+  }
+
+  const score = averageScores([
+    temperatureScore,
+    deltaScore
+  ]);
+
+  return {
+    score,
+    maxConductorTemp,
+    maxAmbientTemp,
+    thermalDelta,
+    temperatureScore,
+    deltaScore
+  };
+}
+
+/*
+  Component: Electrical / Load Health
+
+  Inputs:
+  - peak current / trip level ratio
+  - recent loss-of-current or loss-of-voltage events
+
+  Important:
+  Trip level is not necessarily an ampacity/load rating. This
+  ratio should be treated as a monitoring indicator only unless
+  engineering confirms its appropriate use.
+*/
+function calculateElectricalScore(channels) {
+  const ratios = [];
+
+  channels.forEach(channel => {
+    const peak = toNumber(channel.peakCurrent);
+    const trip = toNumber(channel.tripLevel);
+
+    if (peak !== null && trip !== null && trip > 0) {
+      ratios.push(peak / trip);
+    }
+  });
+
+  const highestPeakTripRatio = ratios.length
+    ? Math.max(...ratios)
+    : null;
+
+  const newestLossTime = newestTimestampFromChannels(
+    channels,
+    ["lossCurrentTime", "lossVoltageTime"]
+  );
+
+  const lossAgeHours = hoursSince(newestLossTime);
+
+  let peakTripScore = null;
+
+  if (highestPeakTripRatio !== null) {
+    const r = FCI_HEALTH_THRESHOLDS.peakTripRatio;
+
+    if (highestPeakTripRatio < r.healthy) peakTripScore = 10;
+    else if (highestPeakTripRatio < r.watch) peakTripScore = 7;
+    else if (highestPeakTripRatio < r.warning) peakTripScore = 4;
+    else peakTripScore = 1;
+  }
+
+  let lossEventScore = null;
+
+  if (lossAgeHours !== null) {
+    if (lossAgeHours > 24 * 30) lossEventScore = 10;
+    else if (lossAgeHours > 24 * 7) lossEventScore = 7;
+    else if (lossAgeHours > 24) lossEventScore = 4;
+    else lossEventScore = 1;
+  }
+
+  const score = averageScores([
+    peakTripScore,
+    lossEventScore
+  ]);
+
+  return {
+    score,
+    highestPeakTripRatio,
+    peakTripScore,
+    newestLossTime,
+    lossAgeHours,
+    lossEventScore
+  };
+}
+
+/*
+  Component: Configuration Health
+
+  Inputs:
+  - firmware available
+  - controller serial available
+  - Flag Count
+  - populated channels missing serial addresses
+*/
+function calculateConfigurationScore(telemetry, channels) {
+  const firmware = telemetry["Smart Controller FW Version"];
+  const controllerSerial =
+    telemetry["Smart Controller Serial Number"];
+
+  const flagCount = toNumber(telemetry["Flag Count"]);
+
+  const missingSerialCount = channels.filter(channel =>
+    !hasTelemetryValue(channel.serialAddress)
+  ).length;
+
+  const firmwareScore = hasTelemetryValue(firmware) ? 10 : 4;
+  const serialScore = hasTelemetryValue(controllerSerial) ? 10 : 4;
+
+  let flagScore = null;
+
+  if (flagCount !== null) {
+    if (flagCount === 0) flagScore = 10;
+    else if (flagCount <= 2) flagScore = 7;
+    else if (flagCount <= 5) flagScore = 4;
+    else flagScore = 1;
+  }
+
+  let channelSetupScore = null;
+
+  if (channels.length) {
+    const missingRatio = missingSerialCount / channels.length;
+
+    if (missingRatio === 0) channelSetupScore = 10;
+    else if (missingRatio <= 0.25) channelSetupScore = 7;
+    else if (missingRatio <= 0.50) channelSetupScore = 4;
+    else channelSetupScore = 1;
+  }
+
+  const score = averageScores([
+    firmwareScore,
+    serialScore,
+    flagScore,
+    channelSetupScore
+  ]);
+
+  return {
+    score,
+    firmware,
+    firmwareScore,
+    controllerSerial,
+    serialScore,
+    flagCount,
+    flagScore,
+    populatedChannels: channels.length,
+    missingSerialCount,
+    channelSetupScore
+  };
+}
+
+/*
+  Full weighted FCI health model.
+*/
+function calculateFciHealthScore(device) {
+  const telemetry = getCfciTelemetry(device);
+
+  if (!telemetry) {
+    return {
+      available: false,
+      overallScore: null,
+      status: "Unknown",
+      color: fciScoreColor(null)
+    };
+  }
+
+  const channels = getPopulatedCfciChannels(telemetry);
+
+  if (!channels.length) {
+    return {
+      available: false,
+      overallScore: null,
+      status: "Unknown",
+      color: fciScoreColor(null)
+    };
+  }
+
+  const communication = calculateCommunicationScore(
+    telemetry,
+    channels
+  );
+
+  const fault = calculateFaultScore(channels);
+  const thermal = calculateThermalScore(channels);
+  const electrical = calculateElectricalScore(channels);
+  const configuration = calculateConfigurationScore(
+    telemetry,
+    channels
+  );
+
+  /*
+    If a component has no usable data, do not treat it as zero.
+    Instead, calculate the weighted result from the available
+    components only.
+  */
+  const components = [
+    {
+      key: "communication",
+      label: "Communication",
+      weight: FCI_HEALTH_WEIGHTS.communication,
+      score: communication.score
+    },
+    {
+      key: "fault",
+      label: "Fault / Reliability",
+      weight: FCI_HEALTH_WEIGHTS.fault,
+      score: fault.score
+    },
+    {
+      key: "thermal",
+      label: "Thermal",
+      weight: FCI_HEALTH_WEIGHTS.thermal,
+      score: thermal.score
+    },
+    {
+      key: "electrical",
+      label: "Electrical / Load",
+      weight: FCI_HEALTH_WEIGHTS.electrical,
+      score: electrical.score
+    },
+    {
+      key: "configuration",
+      label: "Configuration",
+      weight: FCI_HEALTH_WEIGHTS.configuration,
+      score: configuration.score
+    }
+  ];
+
+  const availableComponents = components.filter(component =>
+    component.score !== null &&
+    Number.isFinite(component.score)
+  );
+
+  const availableWeight = availableComponents.reduce(
+    (sum, component) => sum + component.weight,
+    0
+  );
+
+  const weightedScore = availableWeight
+    ? availableComponents.reduce(
+        (sum, component) =>
+          sum + component.score * component.weight,
+        0
+      ) / availableWeight
+    : null;
+
+  const overallScore = weightedScore === null
+    ? null
+    : clampScore(weightedScore);
+
+  return {
+    available: overallScore !== null,
+    overallScore,
+    status: fciScoreLabel(overallScore),
+    color: fciScoreColor(overallScore),
+    components,
+    channels,
+    communication,
+    fault,
+    thermal,
+    electrical,
+    configuration
+  };
+}
+
+/*
+  Donut HTML for the top-right score graphic.
+*/
+function renderFciHealthDonut(health) {
+  if (!health.available) {
+    return `
+      <div class="fci-health-donut fci-health-donut-na">
+        <div class="fci-health-donut-center">
+          <strong>N/A</strong>
+          <span>No data</span>
+        </div>
+      </div>
+    `;
+  }
+
+  const percentage = Math.max(
+    0,
+    Math.min(100, health.overallScore * 10)
+  );
+
+  return `
+    <div
+      class="fci-health-donut"
+      style="
+        --fci-score-color: ${health.color};
+        --fci-score-percent: ${percentage}%;
+      "
+      title="FCI Health Score: ${health.overallScore.toFixed(1)} / 10"
+    >
+      <div class="fci-health-donut-center">
+        <strong>${health.overallScore.toFixed(1)}</strong>
+        <span>/ 10</span>
+      </div>
+    </div>
+  `;
+}
+
+/*
+  Renders the transparent calculation breakdown under the
+  identity/status portion of the detail panel.
+*/
+function renderFciHealthBreakdown(health) {
+  if (!health.available) {
+    return `
+      <div class="fci-health-breakdown">
+        <div class="fci-health-breakdown-title">
+          <span>FCI Health Score</span>
+          <span class="fci-health-status neutral">Unknown</span>
+        </div>
+
+        <div class="fci-health-no-data">
+          No CFCI telemetry is available for this device, so a
+          health score cannot be calculated.
+        </div>
+      </div>
+    `;
+  }
+
+  const c = health.communication;
+  const f = health.fault;
+  const t = health.thermal;
+  const e = health.electrical;
+  const g = health.configuration;
+
+  const componentRow = (label, weight, score, details) => `
+    <details class="fci-score-component" open>
+      <summary>
+        <span>${label}</span>
+        <span>
+          <b>${score === null ? "N/A" : score.toFixed(1)}</b>
+          <em>${Math.round(weight * 100)}%</em>
+        </span>
+      </summary>
+
+      <div class="fci-score-component-body">
+        ${details}
+      </div>
+    </details>
+  `;
+
+  const metric = (label, value, score) => `
+    <div class="fci-score-metric">
+      <span>${label}</span>
+      <span>
+        <b>${value}</b>
+        ${score === null || score === undefined
+          ? ""
+          : `<em>→ ${score.toFixed(1)}/10</em>`}
+      </span>
+    </div>
+  `;
+
+  return `
+    <div class="fci-health-breakdown">
+      <div class="fci-health-breakdown-title">
+        <span>FCI Health Score</span>
+        <span
+          class="fci-health-status"
+          style="
+            color:${health.color};
+            border-color:${health.color}55;
+            background:${health.color}1a;
+          "
+        >
+          ${health.status}
+        </span>
+      </div>
+
+      <div class="fci-score-formula">
+        <span>Overall Formula</span>
+        <code>
+          (${c.score?.toFixed(1) ?? "N/A"} × 35%)
+          + (${f.score?.toFixed(1) ?? "N/A"} × 30%)
+          + (${t.score?.toFixed(1) ?? "N/A"} × 20%)
+          + (${e.score?.toFixed(1) ?? "N/A"} × 10%)
+          + (${g.score?.toFixed(1) ?? "N/A"} × 5%)
+          = ${health.overallScore.toFixed(1)} / 10
+        </code>
+      </div>
+
+      ${componentRow(
+        "Communication Health",
+        FCI_HEALTH_WEIGHTS.communication,
+        c.score,
+        `
+          ${metric(
+            "Telemetry Age",
+            displayHours(c.telemetryAgeHours),
+            c.freshnessScore
+          )}
+
+          ${metric(
+            "Weakest RSSI",
+            c.weakestSignal === null
+              ? "Not reported"
+              : `${c.weakestSignal} dBm`,
+            c.signalScore
+          )}
+
+          ${metric(
+            "Highest Retry Counter",
+            c.highestRetryCounter === null
+              ? "Not reported"
+              : c.highestRetryCounter,
+            c.retryScore
+          )}
+
+          ${metric(
+            "CommLost Diagnostic",
+            c.commLostRaw === undefined ||
+            c.commLostRaw === null ||
+            c.commLostRaw === ""
+              ? "Not reported"
+              : c.commLostRaw,
+            c.commLostScore
+          )}
+
+          <div class="fci-score-rule">
+            Component score = average of available freshness,
+            RSSI, retry, and CommLost input scores.
+          </div>
+        `
+      )}
+
+      ${componentRow(
+        "Fault / Reliability Health",
+        FCI_HEALTH_WEIGHTS.fault,
+        f.score,
+        `
+          ${metric(
+            "Highest Permanent Fault Count",
+            f.permanentFaultCount === null
+              ? "Not reported"
+              : f.permanentFaultCount,
+            f.permanentScore
+          )}
+
+          ${metric(
+            "Highest Momentary Fault Count",
+            f.momentaryFaultCount === null
+              ? "Not reported"
+              : f.momentaryFaultCount,
+            f.momentaryScore
+          )}
+
+          ${metric(
+            "Most Recent Fault Age",
+            displayHours(f.lastFaultAgeHours),
+            f.recencyScore
+          )}
+
+          ${metric(
+            "Highest Last Fault Current",
+            f.highestFaultCurrent === null
+              ? "Not reported"
+              : `${f.highestFaultCurrent} A`,
+            null
+          )}
+
+          <div class="fci-score-rule">
+            Component score = average of permanent fault,
+            momentary fault, and fault-recency scores.
+          </div>
+        `
+      )}
+
+      ${componentRow(
+        "Thermal Health",
+        FCI_HEALTH_WEIGHTS.thermal,
+        t.score,
+        `
+          ${metric(
+            "Maximum Conductor Temperature",
+            t.maxConductorTemp === null
+              ? "Not reported"
+              : t.maxConductorTemp,
+            t.temperatureScore
+          )}
+
+          ${metric(
+            "Maximum Ambient Temperature",
+            t.maxAmbientTemp === null
+              ? "Not reported"
+              : t.maxAmbientTemp,
+            null
+          )}
+
+          ${metric(
+            "Thermal Delta",
+            t.thermalDelta === null
+              ? "Not reported"
+              : `${t.thermalDelta.toFixed(1)}°`,
+            t.deltaScore
+          )}
+
+          <div class="fci-score-rule">
+            Thermal Delta = Conductor Temperature − Ambient Temperature.
+            Verify temperature units and thresholds with Engineering.
+          </div>
+        `
+      )}
+
+      ${componentRow(
+        "Electrical / Load Health",
+        FCI_HEALTH_WEIGHTS.electrical,
+        e.score,
+        `
+          ${metric(
+            "Highest Peak / Trip Ratio",
+            e.highestPeakTripRatio === null
+              ? "Not reported"
+              : e.highestPeakTripRatio.toFixed(2),
+            e.peakTripScore
+          )}
+
+          ${metric(
+            "Most Recent Loss Event Age",
+            displayHours(e.lossAgeHours),
+            e.lossEventScore
+          )}
+
+          <div class="fci-score-rule">
+            Peak / Trip Ratio = Peak Current ÷ Trip Level.
+            Treat as an operational indicator until approved by
+            Protection Engineering.
+          </div>
+        `
+      )}
+
+      ${componentRow(
+        "Configuration Health",
+        FCI_HEALTH_WEIGHTS.configuration,
+        g.score,
+        `
+          ${metric(
+            "Firmware Version",
+            formatTelemetryValue(g.firmware),
+            g.firmwareScore
+          )}
+
+          ${metric(
+            "Controller Serial",
+            formatTelemetryValue(g.controllerSerial),
+            g.serialScore
+          )}
+
+          ${metric(
+            "Flag Count",
+            g.flagCount === null
+              ? "Not reported"
+              : g.flagCount,
+            g.flagScore
+          )}
+
+          ${metric(
+            "Channels With Missing Serial Address",
+            `${g.missingSerialCount} of ${g.populatedChannels}`,
+            g.channelSetupScore
+          )}
+
+          <div class="fci-score-rule">
+            Component score = average of firmware, controller
+            identity, flags, and channel configuration scores.
+          </div>
+        `
+      )}
+
+      <div class="fci-score-disclaimer">
+        Initial scoring model only. Validate telemetry units,
+        reporting intervals, fault interpretations, and thresholds
+        with CFCI vendor documentation and PECO engineering standards.
+      </div>
+    </div>
+  `;
+}
 
 /* Health score per device group = % of IN-SERVICE devices reporting
    Comm Status "Normal", scaled 0–10. Sourced directly from the export's
@@ -155,11 +1604,77 @@ function renderDevices() {
   }).join('') || `<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No devices match these filters.</td></tr>`;
 }
 
+/* Open the PECO Electric Facilities WebApp at the selected device coordinates */
+function openPecoFacilitiesMap(lat, lng, deviceId = "") {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    alert("This device does not have valid latitude/longitude coordinates.");
+    return;
+  }
+
+  const baseUrl =
+    "https://portal.exelonutilities.com/portal/apps/webappviewer/index.html";
+
+  const params = new URLSearchParams({
+    id: "9a325b005ead4460a7b64ffdefcecdb8",
+
+    /*
+      ArcGIS Web AppBuilder expects center as:
+      longitude,latitude
+    */
+    center: `${lng},${lat}`,
+
+    /*
+      Higher number = closer zoom.
+      18 is typically close enough to inspect utility assets.
+    */
+    level: "18"
+  });
+
+  const mapUrl = `${baseUrl}?${params.toString()}`;
+
+  console.log(
+    `Opening PECO Facilities map for ${deviceId || "device"}:`,
+    mapUrl
+  );
+
+  window.open(mapUrl, "_blank", "noopener");
+}
+
+/* Open selected device coordinates in Google Maps */
+function openGoogleMaps(lat, lng, deviceId = "") {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    alert("This device does not have valid latitude/longitude coordinates.");
+    return;
+  }
+
+  /*
+    Google Maps URL format:
+    https://www.google.com/maps/search/?api=1&query=LATITUDE,LONGITUDE
+  */
+  const googleMapsUrl =
+    `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
+
+  console.log(
+    `Opening Google Maps for ${deviceId || "device"}:`,
+    googleMapsUrl
+  );
+
+  window.open(googleMapsUrl, "_blank", "noopener");
+}
+
 /* ══ device detail panel ══ */
 function openDetail(key) {
   const d = Fleet.devices.find(x => x.category + '|' + x.id === key);
-  if (!d) return;
-  const meta = catMeta(d.category);
+if (!d) return;
+
+const meta = catMeta(d.category);
+
+/*
+  Only calculate the score for FCI/CFCI devices.
+*/
+const fciHealth = d.category === "FCI"
+  ? calculateFciHealthScore(d)
+  : null;
   const val = (v, cls = '') => v == null || v === '' || v === '—'
     ? `<span class="dv none">Not provided in export</span>`
     : `<span class="dv ${cls}">${v}</span>`;
@@ -167,12 +1682,28 @@ function openDetail(key) {
   const coords = d.lat != null ? `${d.lat.toFixed(6)}, ${d.lng.toFixed(6)}` : null;
 
   document.getElementById('detail-content').innerHTML = `
-    <div class="d-eyebrow">${meta.label}</div>
-    <div class="d-title">${d.id}</div>
-    <div class="d-tags">
-      <span class="tag ${tagCls[d.commStatus] || 'nis'}">${d.commStatus}</span>
-      <span class="tag ${lifeCls[d.lifecycle]}">${d.lifecycle}</span>
+  <div class="detail-device-header">
+    <div class="detail-device-header-main">
+      <div class="d-eyebrow">${meta.label}</div>
+      <div class="d-title">${d.id}</div>
+
+      <div class="d-tags">
+        <span class="tag ${tagCls[d.commStatus] || 'nis'}">${d.commStatus}</span>
+        <span class="tag ${lifeCls[d.lifecycle]}">${d.lifecycle}</span>
+      </div>
     </div>
+
+    ${fciHealth ? `
+      <div class="detail-fci-score">
+        ${renderFciHealthDonut(fciHealth)}
+        <div class="detail-fci-score-label">
+          FCI Health
+        </div>
+      </div>
+    ` : ""}
+  </div>
+
+  ${fciHealth ? renderFciHealthBreakdown(fciHealth) : ""}
 
     <div class="d-section">
       <h4>Location</h4>
@@ -180,10 +1711,31 @@ function openDetail(key) {
       ${d.location !== d.cleanLocation ? row('Raw Location', d.location) : ''}
       ${row('Substation', d.substation)}
       ${row('Coordinates', coords, 'mono')}
-      <button class="d-btn" style="margin-top:10px" ${coords ? '' : 'disabled'}
-        onclick="${coords ? `showDeviceOnMap('${key}')` : ''}">
-        ${coords ? '◉ View on Map' : 'No coordinates to map'}
-      </button>
+      <div class="detail-map-buttons">
+  <button
+    class="d-btn"
+    ${coords ? "" : "disabled"}
+    onclick="${coords ? `showDeviceOnMap('${key}')` : ""}"
+  >
+    ${coords ? "◉ View in Fleet Map" : "No coordinates to map"}
+  </button>
+
+  <button
+    class="d-btn d-btn-external"
+    ${coords ? "" : "disabled"}
+    onclick="${coords ? `openPecoFacilitiesMap(${d.lat}, ${d.lng}, '${d.id}')` : ""}"
+  >
+    ${coords ? "↗ PECO Facilities Map" : "No PECO map available"}
+  </button>
+
+  <button
+    class="d-btn d-btn-google"
+    ${coords ? "" : "disabled"}
+    onclick="${coords ? `openGoogleMaps(${d.lat}, ${d.lng}, '${d.id}')` : ""}"
+  >
+    ${coords ? "↗ Open Google Maps" : "No Google Maps location"}
+  </button>
+</div>
     </div>
 
     <div class="d-section">
@@ -202,7 +1754,10 @@ function openDetail(key) {
       ${row('Encryption', d.encryption)}
       ${row('In Service', d.inService ? 'TRUE' : 'FALSE')}
       ${row('Lifecycle', d.lifecycle)}
-    </div>`;
+    </div>
+
+    ${d.category === "FCI" ? renderCfciTelemetryDetails(d) : ""}
+  `;
 
   selectedKey = key;
   document.querySelectorAll('#dev-tbody tr.clickable').forEach(tr =>
