@@ -1,57 +1,24 @@
 /* ═══════════════════════════════════════════════════════════
    dataLoader.js — CSV ingestion + normalization
-   ───────────────────────────────────────────────────────────
-   Sources (relative to index.html):
-     Data/fci_export.csv
-     Data/intelliruptors_export.csv
-     Data/recloser_export.csv
-   Loaded at runtime via fetch (requires Live Server / any
-   local HTTP server). If fetch fails (file:// double-click),
-   a drag-and-drop loader overlay is shown instead.
    ═══════════════════════════════════════════════════════════ */
 
 const SOURCES = [
-  { key: 'FCI',           label: 'FCI',            file: 'Data/fci_export.csv',            color: '#2a7fd4' },
-  { key: 'IntelliRupter', label: 'IntelliRupters', file: 'Data/intelliruptors_export.csv', color: '#22c3d6' },
-  { key: 'Recloser',      label: 'Reclosers',      file: 'Data/recloser_export.csv',       color: '#b39ddb' },
+  { key: "FCI", label: "FCI", file: "Data/fci_export.csv", color: "#2a7fd4" },
+  { key: "IntelliRupter", label: "IntelliRupters", file: "Data/intelliruptors_export.csv", color: "#22c3d6" },
+  { key: "Recloser", label: "Reclosers", file: "Data/recloser_export.csv", color: "#b39ddb" }
 ];
 
-/* ═══════════════════════════════════════════════════════════
-   CFCI Smart Controller telemetry export
-
-   Expected file:
-   Data/cfci_telemetry.csv
-
-   The telemetry file uses this header:
-   "Device ID - Session"
-
-   Example:
-   30312-1 -> match key 30312
-   30574-1 -> match key 30574
-   ═══════════════════════════════════════════════════════════ */
-
+/* Detailed FCI-1 through FCI-12 telemetry */
 const CFCI_TELEMETRY_FILE = "Data/cfci_telemetry.csv";
 
+/* Controller/RTM alarms, radio, power, battery, session diagnostics */
+const CFCI_CONTROLLER_STATUS_FILE = "Data/cfci_controller_status.csv";
+
 /*
-  Removes the session suffix from a controller/device ID.
-
-  Examples:
-  "30312-1" -> "30312"
-  "30312-2" -> "30312"
-  "30312"   -> "30312"
-
-  This is used for both the telemetry CSV ID and the fleet-device ID,
-  so device records can be matched consistently.
+  Standard CFCI telemetry join:
+  30312-1 → 30312
 */
 function baseDeviceId(value) {
-  /*
-    Examples:
-    "30312-1"              -> "30312"
-    "30312 - 1"            -> "30312"
-    " 30312-1 "            -> "30312"
-    "30312"                -> "30312"
-    "30312-1.0"            -> "30312"
-  */
   return String(value ?? "")
     .replace(/^\uFEFF/, "")
     .trim()
@@ -61,122 +28,184 @@ function baseDeviceId(value) {
     .toUpperCase();
 }
 
-/* ── RFC-4180-ish CSV parser (handles quoted fields, CRLF) ── */
+/*
+  Controller-status join:
+  Use first five digits only.
+
+  51745-0 → 51745
+  51745-1 → 51745
+*/
+function fiveDigitDeviceId(value) {
+  const match = String(value ?? "")
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .match(/^(\d{5})/);
+
+  return match ? match[1] : "";
+}
+
+/* ── CSV parser ── */
 function parseCSV(text) {
-  const rows = []; let row = [], field = '', inQ = false;
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQ = false;
+
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
+
     if (inQ) {
-      if (c === '"') { if (text[i+1] === '"') { field += '"'; i++; } else inQ = false; }
-      else field += c;
-    } else if (c === '"') inQ = true;
-    else if (c === ',') { row.push(field); field = ''; }
-    else if (c === '\n' || c === '\r') {
-      if (c === '\r' && text[i+1] === '\n') i++;
-      row.push(field); field = '';
-      if (row.length > 1 || row[0] !== '') rows.push(row);
+      if (c === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQ = false;
+        }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQ = true;
+    } else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+
+      row.push(field);
+      field = "";
+
+      if (row.length > 1 || row[0] !== "") rows.push(row);
       row = [];
-    } else field += c;
+    } else {
+      field += c;
+    }
   }
-  if (field !== '' || row.length) { row.push(field); if (row.length > 1 || row[0] !== '') rows.push(row); }
+
+  if (field !== "" || row.length) {
+    row.push(field);
+    if (row.length > 1 || row[0] !== "") rows.push(row);
+  }
+
   return rows;
 }
 
 function rowsToObjects(rows) {
   if (!rows.length) return [];
 
-  /*
-    Removes leading/trailing spaces and removes a hidden UTF-8 BOM
-    character that Excel exports sometimes add to the first header.
-  */
-  const hdr = rows[0].map(h =>
-    String(h ?? "")
+  const headers = rows[0].map(header =>
+    String(header ?? "")
       .replace(/^\uFEFF/, "")
       .trim()
   );
 
-  return rows.slice(1).map(r => {
-    const o = {};
+  return rows.slice(1).map(row => {
+    const object = {};
 
-    hdr.forEach((h, i) => {
-      o[h] = String(r[i] ?? "").trim();
+    headers.forEach((header, index) => {
+      object[header] = String(row[index] ?? "").trim();
     });
 
-    return o;
+    return object;
   });
 }
 
-/* ── normalization ── */
-function cleanLoc(loc)   { return loc.replace(/^\s*(removed|remove)\s*[-:]\s*/i, '').trim(); }
-function substation(loc) { const s = cleanLoc(loc); return s ? (s.split(/[-\s]/)[0] || 'Unknown') : 'Unknown'; }
+/* ── Fleet device normalization ── */
+function cleanLoc(loc) {
+  return String(loc ?? "")
+    .replace(/^\s*(removed|remove)\s*[-:]\s*/i, "")
+    .trim();
+}
+
+function substation(loc) {
+  const clean = cleanLoc(loc);
+  return clean ? (clean.split(/[-\s]/)[0] || "Unknown") : "Unknown";
+}
 
 function normalizeRecord(raw, category) {
-  const lat = parseFloat(raw['Latitude']),  lng = parseFloat(raw['Longitude']);
-  const ssi = parseFloat(raw['SSI']);
-  const inService = String(raw['In Service']).toUpperCase() === 'TRUE';
-  const loc = raw['Location'] || '';
-  const removedTag = /remov/i.test(loc);
+  const lat = parseFloat(raw["Latitude"]);
+  const lng = parseFloat(raw["Longitude"]);
+  const ssi = parseFloat(raw["SSI"]);
+  const inService = String(raw["In Service"]).toUpperCase() === "TRUE";
+  const location = raw["Location"] || "";
+  const removedTag = /remov/i.test(location);
+
   return {
-    id: raw['Device ID'],
+    id: raw["Device ID"],
     category,
     inService,
-    location: loc,
-    cleanLocation: cleanLoc(loc) || '—',
-    substation: substation(loc),
-    product: raw['Product'] || '—',
-    provider: raw['Provider'] || '—',
-    encryption: raw['Encryption'] || '—',
-    firmware: raw['Firmware Version'] || '—',
-    commStatus: raw['Comm Status'] || 'Unknown',
-    lifecycle: inService ? 'Active' : (removedTag ? 'Removed' : 'Inactive'),
+    location,
+    cleanLocation: cleanLoc(location) || "—",
+    substation: substation(location),
+    product: raw["Product"] || "—",
+    provider: raw["Provider"] || "—",
+    encryption: raw["Encryption"] || "—",
+    firmware: raw["Firmware Version"] || "—",
+    commStatus: raw["Comm Status"] || "Unknown",
+    lifecycle: inService ? "Active" : (removedTag ? "Removed" : "Inactive"),
     lat: Number.isFinite(lat) ? lat : null,
     lng: Number.isFinite(lng) ? lng : null,
     ssi: Number.isFinite(ssi) ? ssi : null,
-    radioModel: raw['Radio Model'] || '—',
-    radioIds: raw['Radio Identifiers'] ? [raw['Radio Identifiers']] : [],
+    radioModel: raw["Radio Model"] || "—",
+    radioIds: raw["Radio Identifiers"] ? [raw["Radio Identifiers"]] : []
   };
 }
 
-/* Dedup on (category, Device ID). Cellular exports repeat the same
-   radio as one IMEI row + one ICCID row — merge identifiers, count once. */
 function dedupe(records) {
   const map = new Map();
-  for (const r of records) {
-    const k = r.category + '|' + r.id;
-    if (map.has(k)) {
-      const prev = map.get(k);
-      for (const rid of r.radioIds) if (!prev.radioIds.includes(rid)) prev.radioIds.push(rid);
-      if (prev.lat == null && r.lat != null) { prev.lat = r.lat; prev.lng = r.lng; }
-    } else map.set(k, { ...r, radioIds: [...r.radioIds] });
+
+  for (const record of records) {
+    const key = `${record.category}|${record.id}`;
+
+    if (map.has(key)) {
+      const previous = map.get(key);
+
+      for (const radioId of record.radioIds) {
+        if (!previous.radioIds.includes(radioId)) {
+          previous.radioIds.push(radioId);
+        }
+      }
+
+      if (previous.lat === null && record.lat !== null) {
+        previous.lat = record.lat;
+        previous.lng = record.lng;
+      }
+    } else {
+      map.set(key, {
+        ...record,
+        radioIds: [...record.radioIds]
+      });
+    }
   }
+
   return [...map.values()];
 }
 
-/* ── loading ── */
+/* ── Global application data ── */
 const Fleet = {
   devices: [],
   sourceStatus: {},
   mode: "fetch",
 
-  /*
-    Stores full CFCI telemetry CSV rows indexed by base device ID.
-
-    Example:
-    Fleet.cfciTelemetryByDeviceId["30312"]
-  */
   cfciTelemetryByDeviceId: {},
-
   cfciTelemetryStatus: {
+    loaded: false,
+    rows: 0,
+    matchedDevices: 0,
+    error: null
+  },
+
+  cfciControllerByDeviceId: {},
+  cfciControllerStatus: {
     loaded: false,
     rows: 0,
     matchedDevices: 0,
     error: null
   }
 };
-/* ═══════════════════════════════════════════════════════════
-   Load optional CFCI Smart Controller telemetry CSV
-   ═══════════════════════════════════════════════════════════ */
 
+/* ── Detailed FCI channel telemetry ── */
 async function loadCfciTelemetry() {
   try {
     const response = await fetch(CFCI_TELEMETRY_FILE, {
@@ -191,46 +220,31 @@ async function loadCfciTelemetry() {
     const rows = rowsToObjects(parseCSV(text));
 
     if (!rows.length) {
-      throw new Error("The CFCI telemetry CSV has no data rows.");
+      throw new Error("CFCI telemetry CSV has no data rows.");
     }
 
-    /*
-      Find the device/session ID header safely.
-
-      This allows for:
-      - Device ID - Session
-      - hidden BOM character before the first header
-      - minor capitalization/spacing changes
-    */
     const headers = Object.keys(rows[0]);
 
     const deviceIdHeader = headers.find(header =>
-      header
+      String(header)
         .replace(/^\uFEFF/, "")
         .trim()
         .toLowerCase() === "device id - session"
     );
 
     if (!deviceIdHeader) {
-      console.error("CFCI telemetry headers found:", headers);
-
       throw new Error(
-        'Could not find required telemetry column "Device ID - Session". ' +
-        "Check the CSV header exactly."
+        `Could not find "Device ID - Session". Headers found: ${headers.join(" | ")}`
       );
     }
 
     const indexed = {};
-    let skippedRows = 0;
 
     rows.forEach(row => {
       const sessionId = row[deviceIdHeader];
       const key = baseDeviceId(sessionId);
 
-      if (!key) {
-        skippedRows++;
-        return;
-      }
+      if (!key) return;
 
       indexed[key] = {
         ...row,
@@ -240,7 +254,6 @@ async function loadCfciTelemetry() {
     });
 
     Fleet.cfciTelemetryByDeviceId = indexed;
-
     Fleet.cfciTelemetryStatus = {
       loaded: true,
       rows: Object.keys(indexed).length,
@@ -248,30 +261,13 @@ async function loadCfciTelemetry() {
       error: null
     };
 
-    console.log(
-      `Loaded ${Object.keys(indexed).length} CFCI telemetry records.`
-    );
-
-    console.log(
-      "Example CFCI telemetry keys:",
-      Object.keys(indexed).slice(0, 10)
-    );
-
-    console.log(
-      "Example telemetry record:",
-      indexed[Object.keys(indexed)[0]]
-    );
-
-    if (skippedRows) {
-      console.warn(
-        `Skipped ${skippedRows} CFCI telemetry row(s) because they had no Device ID - Session value.`
-      );
-    }
-
+    console.log(`Loaded ${Object.keys(indexed).length} CFCI telemetry records.`);
     return true;
-  } catch (error) {
-    Fleet.cfciTelemetryByDeviceId = {};
 
+  } catch (error) {
+    console.warn("CFCI telemetry file was not loaded:", error);
+
+    Fleet.cfciTelemetryByDeviceId = {};
     Fleet.cfciTelemetryStatus = {
       loaded: false,
       rows: 0,
@@ -279,110 +275,267 @@ async function loadCfciTelemetry() {
       error: String(error)
     };
 
-    console.error(
-      `CFCI telemetry was not loaded from ${CFCI_TELEMETRY_FILE}:`,
-      error
+    return false;
+  }
+}
+
+/* ── Controller / RTM status telemetry ── */
+async function loadCfciControllerStatus() {
+  try {
+    const response = await fetch(CFCI_CONTROLLER_STATUS_FILE, {
+      cache: "no-store"
+    });
+
+    if (response.status === 404) {
+      console.warn(`Optional controller status file not found: ${CFCI_CONTROLLER_STATUS_FILE}`);
+
+      Fleet.cfciControllerStatus = {
+        loaded: false,
+        rows: 0,
+        matchedDevices: 0,
+        error: "Controller status CSV file not found."
+      };
+
+      return false;
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const text = await response.text();
+    const rows = rowsToObjects(parseCSV(text));
+
+    if (!rows.length) {
+      throw new Error("Controller status CSV has no data rows.");
+    }
+
+    const headers = Object.keys(rows[0]);
+
+    const deviceIdHeader = headers.find(header =>
+      String(header)
+        .replace(/^\uFEFF/, "")
+        .trim()
+        .toLowerCase() === "device id - session"
     );
+
+    if (!deviceIdHeader) {
+      throw new Error(
+        `Could not find "Device ID - Session". Headers found: ${headers.join(" | ")}`
+      );
+    }
+
+    const indexed = {};
+
+    rows.forEach((row, index) => {
+      const sessionId = row[deviceIdHeader];
+      const key = fiveDigitDeviceId(sessionId);
+
+      if (!key) return;
+
+      /*
+        If -0 and -1 both exist, the last row in the CSV is retained.
+        A future version can select the newest report timestamp instead.
+      */
+      indexed[key] = {
+        ...row,
+        __sessionId: sessionId,
+        __fiveDigitDeviceId: key,
+        __sourceRow: index + 1
+      };
+    });
+
+    Fleet.cfciControllerByDeviceId = indexed;
+    Fleet.cfciControllerStatus = {
+      loaded: true,
+      rows: Object.keys(indexed).length,
+      matchedDevices: 0,
+      error: null
+    };
+
+    console.log(`Loaded ${Object.keys(indexed).length} CFCI controller status records.`);
+    return true;
+
+  } catch (error) {
+    console.error("Controller status file was not loaded:", error);
+
+    Fleet.cfciControllerByDeviceId = {};
+    Fleet.cfciControllerStatus = {
+      loaded: false,
+      rows: 0,
+      matchedDevices: 0,
+      error: String(error)
+    };
 
     return false;
   }
 }
 
+/* ── Main loading process ── */
 async function loadAllCSVs() {
-  let anyLoaded = false, fetchWorked = false;
-  for (const src of SOURCES) {
+  let anyLoaded = false;
+  let fetchWorked = false;
+
+  for (const source of SOURCES) {
     try {
-      const res = await fetch(src.file, { cache: 'no-store' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const text = await res.text();
+      const response = await fetch(source.file, {
+        cache: "no-store"
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const text = await response.text();
       fetchWorked = true;
-      const objs = rowsToObjects(parseCSV(text));
-      const recs = dedupe(objs.filter(o => o['Device ID']).map(o => normalizeRecord(o, src.key)));
-      Fleet.devices.push(...recs);
-      Fleet.sourceStatus[src.key] = { loaded: true, rows: objs.length, devices: recs.length };
-      if (recs.length) anyLoaded = true;
-    } catch (e) {
-      Fleet.sourceStatus[src.key] = { loaded: false, error: String(e) };
+
+      const objects = rowsToObjects(parseCSV(text));
+
+      const records = dedupe(
+        objects
+          .filter(row => row["Device ID"])
+          .map(row => normalizeRecord(row, source.key))
+      );
+
+      Fleet.devices.push(...records);
+
+      Fleet.sourceStatus[source.key] = {
+        loaded: true,
+        rows: objects.length,
+        devices: records.length
+      };
+
+      if (records.length) anyLoaded = true;
+
+    } catch (error) {
+      Fleet.sourceStatus[source.key] = {
+        loaded: false,
+        error: String(error)
+      };
     }
   }
+
   if (!fetchWorked) {
-    Fleet.mode = 'manual';
-    document.getElementById('sb-load-data').style.display = 'flex';
-    document.querySelector('.dot-live').classList.add('err');
+    Fleet.mode = "manual";
+    document.getElementById("sb-load-data").style.display = "flex";
+    document.querySelector(".dot-live").classList.add("err");
     showLoaderOverlay();
     return false;
   }
 
-  /*
-    This is optional. The dashboard will still load if the CFCI telemetry
-    file is absent, but CFCI telemetry details will not appear.
-  */
   await loadCfciTelemetry();
+  await loadCfciControllerStatus();
 
-  /*
-    Count how many current fleet devices have a matching telemetry record.
-  */
-  Fleet.cfciTelemetryStatus.matchedDevices = Fleet.devices.filter(device => {
-    const deviceKey = baseDeviceId(device.id);
-    return Boolean(Fleet.cfciTelemetryByDeviceId[deviceKey]);
-  }).length;
+  Fleet.cfciTelemetryStatus.matchedDevices = Fleet.devices.filter(device =>
+    Boolean(Fleet.cfciTelemetryByDeviceId[baseDeviceId(device.id)])
+  ).length;
+
+  Fleet.cfciControllerStatus.matchedDevices = Fleet.devices.filter(device =>
+    Boolean(Fleet.cfciControllerByDeviceId[fiveDigitDeviceId(device.id)])
+  ).length;
 
   return anyLoaded;
 }
 
-/* ── drag-and-drop fallback (file:// mode) ── */
-/* ── drag-and-drop fallback (file:// mode) ── */
+/* ── Manual file loader fallback ── */
 let loaderBound = false;
 
 function showLoaderOverlay() {
-  document.getElementById('loader-overlay').classList.add('show');
+  document.getElementById("loader-overlay").classList.add("show");
   updateLoaderStatus();
+
   if (loaderBound) return;
   loaderBound = true;
-  const zone = document.getElementById('drop-zone');
-  const input = document.getElementById('file-input');
-  zone.addEventListener('click', () => input.click());
-  zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('drag'); });
-  zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
-  zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('drag'); ingestFiles(e.dataTransfer.files); });
-  input.addEventListener('change', () => { ingestFiles(input.files); input.value = ''; });
+
+  const zone = document.getElementById("drop-zone");
+  const input = document.getElementById("file-input");
+
+  zone.addEventListener("click", () => input.click());
+
+  zone.addEventListener("dragover", event => {
+    event.preventDefault();
+    zone.classList.add("drag");
+  });
+
+  zone.addEventListener("dragleave", () => {
+    zone.classList.remove("drag");
+  });
+
+  zone.addEventListener("drop", event => {
+    event.preventDefault();
+    zone.classList.remove("drag");
+    ingestFiles(event.dataTransfer.files);
+  });
+
+  input.addEventListener("change", () => {
+    ingestFiles(input.files);
+    input.value = "";
+  });
 }
 
 function dismissLoader() {
-  document.getElementById('loader-overlay').classList.remove('show');
+  document.getElementById("loader-overlay").classList.remove("show");
 }
 
 function ingestFiles(fileList) {
-  for (const f of fileList) {
-    const src = SOURCES.find(s => f.name.toLowerCase() === s.file.split('/').pop().toLowerCase());
-    if (!src) continue;
+  for (const file of fileList) {
+    const source = SOURCES.find(item =>
+      file.name.toLowerCase() === item.file.split("/").pop().toLowerCase()
+    );
+
+    if (!source) continue;
+
     const reader = new FileReader();
+
     reader.onload = () => {
-      Fleet.devices = Fleet.devices.filter(d => d.category !== src.key);
-      const objs = rowsToObjects(parseCSV(reader.result));
-      const recs = dedupe(objs.filter(o => o['Device ID']).map(o => normalizeRecord(o, src.key)));
-      Fleet.devices.push(...recs);
-      Fleet.sourceStatus[src.key] = { loaded: true, rows: objs.length, devices: recs.length };
+      Fleet.devices = Fleet.devices.filter(device =>
+        device.category !== source.key
+      );
+
+      const objects = rowsToObjects(parseCSV(reader.result));
+
+      const records = dedupe(
+        objects
+          .filter(row => row["Device ID"])
+          .map(row => normalizeRecord(row, source.key))
+      );
+
+      Fleet.devices.push(...records);
+
+      Fleet.sourceStatus[source.key] = {
+        loaded: true,
+        rows: objects.length,
+        devices: records.length
+      };
+
       updateLoaderStatus();
-      if (Object.values(Fleet.sourceStatus).some(s => s.loaded && s.devices > 0)) {
-        document.getElementById('loader-continue').style.display = 'inline-block';
+
+      if (Object.values(Fleet.sourceStatus).some(status =>
+        status.loaded && status.devices > 0
+      )) {
+        document.getElementById("loader-continue").style.display = "inline-block";
       }
     };
-    reader.readAsText(f);
+
+    reader.readAsText(file);
   }
 }
 
 function updateLoaderStatus() {
-  document.getElementById('loader-status').innerHTML = SOURCES.map(s => {
-    const st = Fleet.sourceStatus[s.key];
-    return st && st.loaded
-      ? `<div class="ok">✓ ${s.file.split('/').pop()} — ${st.devices} devices</div>`
-      : `<div class="miss">○ ${s.file.split('/').pop()} — not loaded</div>`;
-  }).join('');
+  document.getElementById("loader-status").innerHTML = SOURCES.map(source => {
+    const status = Fleet.sourceStatus[source.key];
+
+    return status && status.loaded
+      ? `<div class="ok">✓ ${source.file.split("/").pop()} — ${status.devices} devices</div>`
+      : `<div class="miss">○ ${source.file.split("/").pop()} — not loaded</div>`;
+  }).join("");
 }
 
 function finishManualLoad() {
   dismissLoader();
-  App.init();                                    // re-renders Home, Devices, badges
-  if (typeof map !== 'undefined' && map) renderMap();  // refresh map if already open
+  App.init();
+
+  if (typeof map !== "undefined" && map) {
+    renderMap();
+  }
 }

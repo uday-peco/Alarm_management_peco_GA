@@ -1752,3 +1752,113 @@ tbody tr.clickable.selected {
     align-self: flex-end;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════
+   CFCI CONTROLLER ALARM SUMMARY
+   ═══════════════════════════════════════════════════════════ */
+
+.cfci-controller-section {
+  margin-top: 22px;
+}
+
+.controller-alarm-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.controller-alarm {
+  padding: 10px;
+  background: #0c1215;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 8px;
+}
+
+.controller-alarm.critical {
+  background: rgba(255, 101, 112, 0.09);
+  border-left-color: var(--danger);
+}
+
+.controller-alarm.warning {
+  background: rgba(244, 182, 78, 0.09);
+  border-left-color: var(--warning);
+}
+
+.controller-alarm.watch {
+  background: rgba(100, 140, 255, 0.09);
+  border-left-color: var(--c-blue);
+}
+
+.controller-alarm-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.controller-alarm-title strong {
+  font-weight: 750;
+}
+
+.controller-alarm-severity {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+}
+
+.controller-alarm-detail {
+  margin-top: 5px;
+  color: var(--ink2);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.controller-normal {
+  padding: 10px;
+  color: var(--success);
+  background: rgba(71, 220, 147, 0.08);
+  border: 1px solid rgba(71, 220, 147, 0.18);
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.controller-no-data {
+  padding: 10px 0;
+  color: var(--ink3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.controller-status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid rgba(32, 41, 47, 0.7);
+  font-size: 11px;
+}
+
+.controller-status-row:last-child {
+  border-bottom: none;
+}
+
+.controller-status-row span {
+  color: var(--ink3);
+}
+
+.controller-status-row strong {
+  max-width: 58%;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 650;
+  text-align: right;
+  word-break: break-word;
+}

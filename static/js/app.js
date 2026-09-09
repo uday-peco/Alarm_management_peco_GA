@@ -296,6 +296,316 @@ function renderCfciTelemetryDetails(device) {
 }
 
 /* ═══════════════════════════════════════════════════════════
+   CFCI CONTROLLER STATUS / ALARMS
+   ═══════════════════════════════════════════════════════════ */
+
+function getCfciControllerStatus(device) {
+  if (!device || !Fleet.cfciControllerByDeviceId) return null;
+
+  return Fleet.cfciControllerByDeviceId[
+    fiveDigitDeviceId(device.id)
+  ] || null;
+}
+
+function normalizeStatus(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function isYes(value) {
+  return [
+    "yes",
+    "true",
+    "online",
+    "normal",
+    "ok",
+    "healthy"
+  ].includes(normalizeStatus(value));
+}
+
+function isOffline(value) {
+  return [
+    "offline",
+    "off",
+    "no",
+    "false",
+    "not online",
+    "not connected",
+    "down"
+  ].includes(normalizeStatus(value));
+}
+
+function isAlarm(value) {
+  const status = normalizeStatus(value);
+
+  return [
+    "alarm",
+    "active",
+    "fault",
+    "failed",
+    "fuse blown",
+    "ac voltage not present",
+    "outage",
+    "critical"
+  ].some(term => status.includes(term));
+}
+
+function isNormalPower(value) {
+  return [
+    "normal",
+    "ok",
+    "present",
+    "ac voltage present",
+    "healthy"
+  ].includes(normalizeStatus(value));
+}
+
+function controllerField(controller, field) {
+  return controller ? (controller[field] ?? null) : null;
+}
+
+function buildCfciControllerAlarms(device) {
+  const controller = getCfciControllerStatus(device);
+
+  if (!controller) return [];
+
+  const alarms = [];
+
+  const add = (severity, title, detail) => {
+    alarms.push({ severity, title, detail });
+  };
+
+  const radioComms = controllerField(controller, "Radio Comms Up");
+  const session0 = controllerField(controller, "Session 0 online");
+  const session1 = controllerField(controller, "Session 1 online");
+  const commLostStatus = controllerField(controller, "CommLost Status");
+  const commLostDiagnostic = toNumber(controllerField(controller, "CommLost Diagnostic"));
+
+  const acOutage = controllerField(controller, "AC Outage");
+  const batteryFuse = controllerField(controller, "Battery Fuse Status");
+  const timeSynchronized = controllerField(controller, "Time Synchronized");
+  const configurationIssue = controllerField(controller, "User Configuration Issue");
+  const criticalStack = controllerField(controller, "Thread(s) at Critical Stack Usage");
+  const networkOverage = controllerField(controller, "Network Data Overage Alarm");
+
+  const flagCount = toNumber(controllerField(controller, "Flag Count"));
+  const inboundRetries = toNumber(controllerField(controller, "Inbound Retries"));
+
+  const txSuccess0 = toNumber(
+    controllerField(controller, "Today's Percent Successful TX (Session 0)")
+  );
+
+  const txSuccess1 = toNumber(
+    controllerField(controller, "Today's Percent Successful TX (Session 1)")
+  );
+
+  if (
+    normalizeStatus(acOutage).includes("ac voltage not present") ||
+    normalizeStatus(acOutage).includes("outage")
+  ) {
+    add("critical", "AC Power Not Present", `AC Outage: ${acOutage}`);
+  }
+
+  if (normalizeStatus(batteryFuse).includes("fuse blown")) {
+    add("critical", "Battery Fuse Blown", `Battery Fuse Status: ${batteryFuse}`);
+  }
+
+  if (isAlarm(commLostStatus)) {
+    add("critical", "Communication Loss Alarm", `CommLost Status: ${commLostStatus}`);
+  }
+
+  if (!isYes(radioComms) && hasTelemetryValue(radioComms)) {
+    add("critical", "Radio Communications Not Available", `Radio Comms Up: ${radioComms}`);
+  }
+
+  if (
+    hasTelemetryValue(session0) &&
+    hasTelemetryValue(session1) &&
+    isOffline(session0) &&
+    isOffline(session1)
+  ) {
+    add(
+      "critical",
+      "Both Communication Sessions Offline",
+      `Session 0: ${session0}; Session 1: ${session1}`
+    );
+  }
+
+  if (isAlarm(criticalStack)) {
+    add(
+      "critical",
+      "Critical Controller Stack Usage",
+      `Critical Stack Usage: ${criticalStack}`
+    );
+  }
+
+  if (
+    hasTelemetryValue(session0) &&
+    hasTelemetryValue(session1) &&
+    (isOffline(session0) || isOffline(session1)) &&
+    !(isOffline(session0) && isOffline(session1))
+  ) {
+    add(
+      "warning",
+      "One Communication Session Offline",
+      `Session 0: ${session0}; Session 1: ${session1}`
+    );
+  }
+
+  if (commLostDiagnostic !== null && commLostDiagnostic !== 0) {
+    add(
+      "warning",
+      "CommLost Diagnostic Active",
+      `CommLost Diagnostic: ${commLostDiagnostic}`
+    );
+  }
+
+  if (!isYes(timeSynchronized) && hasTelemetryValue(timeSynchronized)) {
+    add(
+      "warning",
+      "Controller Time Not Synchronized",
+      `Time Synchronized: ${timeSynchronized}`
+    );
+  }
+
+  if (
+    hasTelemetryValue(configurationIssue) &&
+    !normalizeStatus(configurationIssue).includes("normal")
+  ) {
+    add(
+      "warning",
+      "User Configuration Issue",
+      `Configuration Status: ${configurationIssue}`
+    );
+  }
+
+  if (isAlarm(networkOverage)) {
+    add(
+      "warning",
+      "Network Data Overage Alarm",
+      `Network Data Overage Alarm: ${networkOverage}`
+    );
+  }
+
+  if (flagCount !== null && flagCount > 0) {
+    add("watch", "Controller Diagnostic Flags Present", `Flag Count: ${flagCount}`);
+  }
+
+  if (inboundRetries !== null && inboundRetries > 10) {
+    add("watch", "Elevated Inbound Retries", `Inbound Retries: ${inboundRetries}`);
+  }
+
+  if (txSuccess0 !== null && txSuccess0 < 95) {
+    add(
+      "watch",
+      "Reduced Session 0 Transmission Success",
+      `Successful TX: ${txSuccess0}%`
+    );
+  }
+
+  if (txSuccess1 !== null && txSuccess1 < 95) {
+    add(
+      "watch",
+      "Reduced Session 1 Transmission Success",
+      `Successful TX: ${txSuccess1}%`
+    );
+  }
+
+  return alarms;
+}
+
+function renderCfciControllerStatus(device) {
+  const controller = getCfciControllerStatus(device);
+
+  if (!controller) {
+    return `
+      <div class="d-section cfci-controller-section">
+        <h4>Controller Alarm Summary</h4>
+        <div class="controller-no-data">
+          No controller-status data found for device key:
+          ${fiveDigitDeviceId(device.id)}.
+        </div>
+      </div>
+    `;
+  }
+
+  const alarms = buildCfciControllerAlarms(device);
+
+  const statusRow = (label, value) => `
+    <div class="controller-status-row">
+      <span>${label}</span>
+      <strong>${formatTelemetryValue(value)}</strong>
+    </div>
+  `;
+
+  const alarmHtml = alarms.length
+    ? alarms.map(alarm => `
+      <div class="controller-alarm ${alarm.severity}">
+        <div class="controller-alarm-title">
+          <span class="controller-alarm-severity">${alarm.severity}</span>
+          <strong>${alarm.title}</strong>
+        </div>
+        <div class="controller-alarm-detail">${alarm.detail}</div>
+      </div>
+    `).join("")
+    : `
+      <div class="controller-normal">
+        No controller alarms were identified from the current export.
+      </div>
+    `;
+
+  return `
+    <div class="d-section cfci-controller-section">
+      <h4>Controller Alarm Summary</h4>
+
+      <div class="controller-alarm-list">
+        ${alarmHtml}
+      </div>
+
+      <details class="cfci-channel">
+        <summary>
+          <span>Controller Status and Diagnostics</span>
+          <span class="cfci-channel-summary">
+            ${alarms.length} alert${alarms.length === 1 ? "" : "s"}
+          </span>
+        </summary>
+
+        <div class="cfci-channel-body">
+          <div class="cfci-group-title">Communications</div>
+          ${statusRow("Radio Comms Up", controller["Radio Comms Up"])}
+          ${statusRow("Session 0", controller["Session 0 online"])}
+          ${statusRow("Session 1", controller["Session 1 online"])}
+          ${statusRow("CommLost Status", controller["CommLost Status"])}
+          ${statusRow("CommLost Diagnostic", controller["CommLost Diagnostic"])}
+          ${statusRow("RF Comms State", controller["RF Comms State"])}
+          ${statusRow("Average Radio RX", controller["Average Radio RX Signal"])}
+          ${statusRow("Average Radio TX", controller["Average Radio TX Signal"])}
+          ${statusRow("Inbound Retries", controller["Inbound Retries"])}
+
+          <div class="cfci-group-title">Power and Battery</div>
+          ${statusRow("AC Outage", controller["AC Outage"])}
+          ${statusRow("Battery Fuse Status", controller["Battery Fuse Status"])}
+          ${statusRow("Line Voltage", controller["Line Voltage Present Value (VAC)"])}
+          ${statusRow("Battery State", controller["Present Battery State"])}
+          ${statusRow("Battery Test Condition", controller["Last Test Battery Condition"])}
+          ${statusRow("Battery Test Voltage", controller["Battery Test Voltage (VDC)"])}
+
+          <div class="cfci-group-title">Diagnostics</div>
+          ${statusRow("Time Synchronized", controller["Time Synchronized"])}
+          ${statusRow("Configuration Issue", controller["User Configuration Issue"])}
+          ${statusRow("Critical Stack Usage", controller["Thread(s) at Critical Stack Usage"])}
+          ${statusRow("Flag Count", controller["Flag Count"])}
+          ${statusRow("Board Temperature", controller["Board Temperature (deg C)"])}
+          ${statusRow("Firmware Version", controller["RTM FW Version Number"])}
+          ${statusRow("Session ID", controller.__sessionId)}
+        </div>
+      </details>
+    </div>
+  `;
+}
+
+/* ═══════════════════════════════════════════════════════════
    FCI HEALTH SCORE
    -----------------------------------------------------------
    Initial operational scoring model.
@@ -1065,7 +1375,33 @@ function calculateFciHealthScore(device) {
     telemetry,
     channels
   );
+const controller = getCfciControllerStatus(device);
 
+if (controller) {
+  const controllerAlarms = buildCfciControllerAlarms(device);
+
+  const hasCriticalControllerAlarm = controllerAlarms.some(
+    alarm => alarm.severity === "critical"
+  );
+
+  const hasWarningControllerAlarm = controllerAlarms.some(
+    alarm => alarm.severity === "warning"
+  );
+
+  /*
+    Controller alarms affect existing health dimensions.
+    They do not change the original 35/30/20/10/5 weights.
+  */
+  if (hasCriticalControllerAlarm) {
+    communication.score = Math.min(communication.score ?? 10, 1);
+    electrical.score = Math.min(electrical.score ?? 10, 1);
+    configuration.score = Math.min(configuration.score ?? 10, 2);
+  } else if (hasWarningControllerAlarm) {
+    communication.score = Math.min(communication.score ?? 10, 5);
+    electrical.score = Math.min(electrical.score ?? 10, 6);
+    configuration.score = Math.min(configuration.score ?? 10, 6);
+  }
+}
   /*
     If a component has no usable data, do not treat it as zero.
     Instead, calculate the weighted result from the available
@@ -1566,42 +1902,239 @@ const App = {
       provs.map(p => `<option>${p}</option>`).join('');
   },
 };
+/* ==========================================================
+   DEVICE TABLE ALARM SUMMARY / ALARM PILL
+   ========================================================== */
 
+/*
+  Determines an alarm category from the existing controller
+  alarm title. This also works with your current alarm objects
+  that use severity, title, and detail.
+*/
+function getAlarmType(alarm) {
+  const text = `${alarm.title || ""} ${alarm.detail || ""}`.toLowerCase();
+
+  if (
+    text.includes("ac power") ||
+    text.includes("ac outage") ||
+    text.includes("battery") ||
+    text.includes("fuse")
+  ) {
+    return "power";
+  }
+
+  if (
+    text.includes("communication") ||
+    text.includes("commlost") ||
+    text.includes("radio") ||
+    text.includes("session") ||
+    text.includes("retries") ||
+    text.includes("transmission")
+  ) {
+    return "communication";
+  }
+
+  return "configuration";
+}
+
+function getDeviceAlarmSummary(device) {
+  /*
+    Alarm data currently applies only to FCI/CFCI devices.
+  */
+  if (device.category !== "FCI") {
+    return {
+      hasControllerData: null,
+      alarms: [],
+      highestSeverity: null
+    };
+  }
+
+  const controller = getCfciControllerStatus(device);
+
+  if (!controller) {
+    return {
+      hasControllerData: false,
+      alarms: [],
+      highestSeverity: null
+    };
+  }
+
+  const alarms = buildCfciControllerAlarms(device).map(alarm => ({
+    ...alarm,
+    type: alarm.type || getAlarmType(alarm)
+  }));
+
+  const highestSeverity =
+    alarms.some(alarm => alarm.severity === "critical") ? "critical" :
+    alarms.some(alarm => alarm.severity === "warning") ? "warning" :
+    alarms.some(alarm => alarm.severity === "watch") ? "watch" :
+    "normal";
+
+  return {
+    hasControllerData: true,
+    alarms,
+    highestSeverity
+  };
+}
+
+function renderDeviceAlarmPill(device) {
+  const summary = getDeviceAlarmSummary(device);
+
+  /* IntelliRupters and Reclosers do not yet have controller alarm data */
+  if (device.category !== "FCI") {
+    return `<span class="alarm-pill na">—</span>`;
+  }
+
+  if (!summary.hasControllerData) {
+    return `<span class="alarm-pill no-data">No Data</span>`;
+  }
+
+  if (!summary.alarms.length) {
+    return `<span class="alarm-pill normal">Normal</span>`;
+  }
+
+  const criticalCount = summary.alarms.filter(
+    alarm => alarm.severity === "critical"
+  ).length;
+
+  const warningCount = summary.alarms.filter(
+    alarm => alarm.severity === "warning"
+  ).length;
+
+  const watchCount = summary.alarms.filter(
+    alarm => alarm.severity === "watch"
+  ).length;
+
+  const label =
+    criticalCount ? `Critical · ${criticalCount}` :
+    warningCount ? `Warning · ${warningCount}` :
+    `Watch · ${watchCount}`;
+
+  return `
+    <span
+      class="alarm-pill ${summary.highestSeverity}"
+      title="${summary.alarms.map(alarm => alarm.title).join(" | ")}"
+    >
+      ${label}
+    </span>
+  `;
+}
 /* ══ DEVICES page (category-wide search incl. Product ID) ══ */
 function renderDevices() {
-  const q = (document.getElementById('d-search').value || '').toLowerCase();
-  const cat = document.getElementById('d-cat').value;
-  const c = document.getElementById('d-comm').value;
-  const l = document.getElementById('d-life').value;
-  const p = document.getElementById('d-prov').value;
-  const rows = Fleet.devices.filter(d => {
-    if (cat && d.category !== cat) return false;
-    if (c && d.commStatus !== c) return false;
-    if (l && d.lifecycle !== l) return false;
-    if (p && d.provider !== p) return false;
-    if (q && !(
-      d.id.toLowerCase().includes(q) ||
-      d.product.toLowerCase().includes(q) ||
-      d.location.toLowerCase().includes(q) ||
-      d.substation.toLowerCase().includes(q) ||
-      d.category.toLowerCase().includes(q)
-    )) return false;
+  const q = (document.getElementById("d-search").value || "")
+    .toLowerCase();
+
+  const cat = document.getElementById("d-cat").value;
+  const comm = document.getElementById("d-comm").value;
+  const life = document.getElementById("d-life").value;
+  const provider = document.getElementById("d-prov").value;
+  const alarmFilter = document.getElementById("d-alarm").value;
+
+  const rows = Fleet.devices.filter(device => {
+    if (cat && device.category !== cat) return false;
+    if (comm && device.commStatus !== comm) return false;
+    if (life && device.lifecycle !== life) return false;
+    if (provider && device.provider !== provider) return false;
+
+    if (
+      q &&
+      !(
+        device.id.toLowerCase().includes(q) ||
+        device.product.toLowerCase().includes(q) ||
+        device.location.toLowerCase().includes(q) ||
+        device.substation.toLowerCase().includes(q) ||
+        device.category.toLowerCase().includes(q)
+      )
+    ) {
+      return false;
+    }
+
+    /*
+      Alarm filtering applies only to FCI devices because only
+      FCI/CFCI controller alarm data is currently loaded.
+    */
+    if (alarmFilter) {
+      const summary = getDeviceAlarmSummary(device);
+
+      if (alarmFilter === "no-data") {
+        if (device.category !== "FCI" || summary.hasControllerData !== false) {
+          return false;
+        }
+      } else {
+        /*
+          Any actual alarm filter excludes non-FCI devices.
+        */
+        if (device.category !== "FCI") return false;
+
+        const alarms = summary.alarms;
+
+        if (alarmFilter === "any" && !alarms.length) return false;
+
+        if (
+          ["critical", "warning", "watch"].includes(alarmFilter) &&
+          !alarms.some(alarm => alarm.severity === alarmFilter)
+        ) {
+          return false;
+        }
+
+        if (
+          ["communication", "power", "configuration"].includes(alarmFilter) &&
+          !alarms.some(alarm => alarm.type === alarmFilter)
+        ) {
+          return false;
+        }
+      }
+    }
+
     return true;
   });
-  document.getElementById('d-count').textContent = rows.length + ' of ' + Fleet.devices.length;
-  document.getElementById('dev-tbody').innerHTML = rows.map(d => {
-    const meta = catMeta(d.category);
-    return `<tr class="clickable" data-key="${d.category}|${d.id}">
-      <td class="mono">${d.id}</td>
-      <td><span class="cat-chip"><span class="cd" style="background:${meta.color}"></span>${meta.label}</span></td>
-      <td>${d.product}</td>
-      <td>${d.substation}</td>
-      <td><span class="tag ${tagCls[d.commStatus] || 'nis'}">${d.commStatus}</span></td>
-      <td><span class="tag ${lifeCls[d.lifecycle]}">${d.lifecycle}</span></td>
-      <td>${d.provider}</td>
-      <td class="row-chevron">›</td>
-    </tr>`;
-  }).join('') || `<tr><td colspan="8" class="muted" style="text-align:center;padding:24px">No devices match these filters.</td></tr>`;
+
+  document.getElementById("d-count").textContent =
+    `${rows.length} of ${Fleet.devices.length}`;
+
+  document.getElementById("dev-tbody").innerHTML = rows.map(device => {
+    const meta = catMeta(device.category);
+
+    return `
+      <tr class="clickable" data-key="${device.category}|${device.id}">
+        <td class="mono">${device.id}</td>
+
+        <td>
+          <span class="cat-chip">
+            <span class="cd" style="background:${meta.color}"></span>
+            ${meta.label}
+          </span>
+        </td>
+
+        <td>${device.product}</td>
+        <td>${device.substation}</td>
+
+        <td>
+          <span class="tag ${tagCls[device.commStatus] || "nis"}">
+            ${device.commStatus}
+          </span>
+        </td>
+
+        <td>${renderDeviceAlarmPill(device)}</td>
+
+        <td>
+          <span class="tag ${lifeCls[device.lifecycle]}">
+            ${device.lifecycle}
+          </span>
+        </td>
+
+        <td>${device.provider}</td>
+
+        <td class="row-chevron">›</td>
+      </tr>
+    `;
+  }).join("") || `
+    <tr>
+      <td colspan="9" class="muted" style="text-align:center;padding:24px">
+        No devices match these filters.
+      </td>
+    </tr>
+  `;
 }
 
 /* Open the PECO Electric Facilities WebApp at the selected device coordinates */
@@ -1756,7 +2289,11 @@ const fciHealth = d.category === "FCI"
       ${row('Lifecycle', d.lifecycle)}
     </div>
 
-    ${d.category === "FCI" ? renderCfciTelemetryDetails(d) : ""}
+    ${d.category === "FCI" ? renderCfciControllerStatus(d) : ""}
+
+${d.category === "FCI" ? renderCfciTelemetryDetails(d) : ""}
+
+
   `;
 
   selectedKey = key;
@@ -1808,7 +2345,17 @@ document.getElementById('dev-tbody').addEventListener('click', e => {
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDetail(); });
 
 function resetDevices() {
-  ['d-search', 'd-cat', 'd-comm', 'd-life', 'd-prov'].forEach(id => document.getElementById(id).value = '');
+  [
+    "d-search",
+    "d-cat",
+    "d-comm",
+    "d-life",
+    "d-prov",
+    "d-alarm"
+  ].forEach(id => {
+    document.getElementById(id).value = "";
+  });
+
   renderDevices();
 }
 

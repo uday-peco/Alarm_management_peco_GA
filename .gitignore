@@ -19,3 +19,4 @@ build/
 
 # Log files
 *.log
+update-controller-alarms.ps1

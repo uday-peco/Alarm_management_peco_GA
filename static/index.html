@@ -78,6 +78,20 @@
         <div class="fg"><span class="fl">Lifecycle</span><select class="f-select" id="d-life" onchange="renderDevices()">
           <option value="">All</option><option>Active</option><option>Removed</option><option>Inactive</option></select></div>
         <div class="fg"><span class="fl">Provider</span><select class="f-select" id="d-prov" onchange="renderDevices()"></select></div>
+        <div class="fg">
+  <span class="fl">Alarm Status</span>
+  <select class="f-select" id="d-alarm" onchange="renderDevices()">
+    <option value="">All Devices</option>
+    <option value="any">Any Alarm</option>
+    <option value="critical">Critical Alarm</option>
+    <option value="warning">Warning Alarm</option>
+    <option value="watch">Watch Condition</option>
+    <option value="communication">Communication Alarm</option>
+    <option value="power">Power / Battery Alarm</option>
+    <option value="configuration">Configuration Alarm</option>
+    <option value="no-data">No Controller Data</option>
+  </select>
+</div>
         <button class="btn-reset" onclick="resetDevices()">↺ Reset</button>
       </div>
       <div class="sec-head">
@@ -87,7 +101,8 @@
       <div class="card" style="padding:0">
         <div class="table-scroll"><table><thead><tr>
           <th>Device ID</th><th>Category</th><th>Product</th><th>Substation</th>
-          <th>Comm Status</th><th>Lifecycle</th><th>Provider</th><th class="col-narrow"></th>
+<th>Comm Status</th><th>Alarm Status</th><th>Lifecycle</th>
+<th>Provider</th><th class="col-narrow"></th>
         </tr></thead><tbody id="dev-tbody"></tbody></table></div>
       </div>
     </div>
