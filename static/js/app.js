@@ -2316,25 +2316,49 @@ function closeDetail() {
 }
 
 /* jump from the detail panel to the map, zoomed on this device */
-function showDeviceOnMap(key) {
-  const d = Fleet.devices.find(x => x.category + '|' + x.id === key);
-  if (!d || d.lat == null) return;
-  const navItem = document.querySelector('.sb-nav .sb-item[data-page="map"]');
-  showPage('map', navItem);
+function showDeviceOnMap(key) {function showDeviceOnMap(key) {
+  const device = Fleet.devices.find(
+    item => `${item.category}|${item.id}` === key
+  );
+
+  if (
+    !device ||
+    !Number.isFinite(device.lat) ||
+    !Number.isFinite(device.lng)
+  ) {
+    return;
+  }
+
+  const navItem = document.querySelector(
+    '.sb-nav .sb-item[data-page="map"]'
+  );
+
+  showPage("map", navItem);
+
   setTimeout(() => {
     if (!map) return;
-    map.invalidateSize();
-    /* if current map filters hide this device, clear them so it's visible */
+
+    /* OpenLayers equivalent of Leaflet's invalidateSize(). */
+    map.updateSize();
+
+    /* Clear filters if they currently hide this device. */
     if (!markersByKey[key]) {
-      document.getElementById('m-cat').value = '';
-      document.getElementById('m-comm').value = '';
+      document.getElementById("m-cat").value = "";
+      document.getElementById("m-comm").value = "";
       renderMap();
     }
-    map.setView([d.lat, d.lng], 16);
+
+    map.getView().animate({
+      center: ol.proj.fromLonLat([device.lng, device.lat]),
+      zoom: 16,
+      duration: 250
+    });
+
     highlightMarker(key);
-    /* panel stays open, but drop the backdrop now that we're on the map */
-    document.getElementById('detail-backdrop').classList.remove('show');
+
+    document.getElementById("detail-backdrop").classList.remove("show");
   }, 120);
+}
 }
 
 /* row clicks (delegated — survives re-renders) + Esc to close */
@@ -2359,69 +2383,240 @@ function resetDevices() {
   renderDevices();
 }
 
-/* ══ MAP page — every device in the repository with LAT/LONG ══ */
+/* ══ MAP page — OpenLayers ══════════════════════════════════ */
 let map, layer;
-let markersByKey = {};   // "category|id" -> circleMarker
+let markersByKey = {};   // "category|id" -> OpenLayers Feature
 let selectedKey = null;  // device currently shown in the detail panel
+
 const MAP_COLORS = {
-  category:   Object.fromEntries(SOURCES.map(s => [s.key, s.color])),
-  commStatus: { 'Normal': '#22c3d6', 'Missing': '#e79a86', 'Not in Service': '#b9c0c9' },
-  lifecycle:  { 'Active': '#22c3d6', 'Removed': '#b39ddb', 'Inactive': '#b9c0c9' },
+  category: Object.fromEntries(SOURCES.map(s => [s.key, s.color])),
+  commStatus: {
+    Normal: "#22c3d6",
+    Missing: "#e79a86",
+    "Not in Service": "#b9c0c9"
+  },
+  lifecycle: {
+    Active: "#22c3d6",
+    Removed: "#b39ddb",
+    Inactive: "#b9c0c9"
+  }
 };
-function initMap() {
-  if (map) return;
-  map = L.map('leaflet-map', { scrollWheelZoom: true }).setView([40.05, -75.35], 9);
-  L.tileLayer(
-    'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',    
-    {
-       attribution: '© OpenStreetMap © CARTO', 
-       maxZoom: 19 }
-      ).addTo(map);
-  layer = L.layerGroup().addTo(map);
-  renderMap();
-}
-function renderMap() {
-  if (!map) return;
-  layer.clearLayers();
-  markersByKey = {};
-  const colorBy = document.getElementById('m-color').value;
-  const catF = document.getElementById('m-cat').value;
-  const commF = document.getElementById('m-comm').value;
-  const pts = Fleet.devices.filter(d =>
-    d.lat != null && (!catF || d.category === catF) && (!commF || d.commStatus === commF));
-  const pal = MAP_COLORS[colorBy];
-  pts.forEach(d => {
-    const key = d.category + '|' + d.id;
-    const base = { radius: 6, color: '#fff', weight: 1.5, fillColor: pal[d[colorBy]] || '#888', fillOpacity: .9 };
-    const m = L.circleMarker([d.lat, d.lng], base)
-      .bindTooltip(`<b>${d.id}</b> · ${catMeta(d.category).label}<br>${d.cleanLocation}`,
-        { direction: 'top', offset: [0, -9], className: 'map-tip' })
-      .on('click', () => openDetail(key))
-      .addTo(layer);
-    m._baseStyle = base;
-    markersByKey[key] = m;
+
+function createMapMarkerStyle(fillColor) {
+  return new ol.style.Style({
+    image: new ol.style.Circle({
+      radius: 6,
+      fill: new ol.style.Fill({
+        color: fillColor
+      }),
+      stroke: new ol.style.Stroke({
+        color: "#ffffff",
+        width: 1.5
+      })
+    })
   });
-  if (pts.length) { try { map.fitBounds(L.featureGroup(layer.getLayers()).getBounds().pad(.15)); } catch (e) {} }
-  if (selectedKey) highlightMarker(selectedKey);   // survive filter/color changes
-  const labelFor = k => colorBy === 'category' ? (catMeta(k) ? catMeta(k).label : k) : k;
-  document.getElementById('map-legend').innerHTML = '<div class="legend">' +
-    Object.keys(pal).map(k =>
-      `<div class="lg"><span class="dot" style="background:${pal[k]}"></span>${labelFor(k)}<span class="muted" style="margin-left:auto">${pts.filter(d => d[colorBy] === k).length}</span></div>`).join('') + '</div>';
-  const unlocated = Fleet.devices.length - Fleet.devices.filter(d => d.lat != null).length;
-  document.getElementById('map-stats').innerHTML =
-    `${pts.length} plotted` + (unlocated ? `<br><span class="muted">${unlocated} device(s) have no LAT/LONG in source</span>` : '');
 }
 
-/* marker selection styling */
+function createSelectedMapMarkerStyle(fillColor) {
+  return new ol.style.Style({
+    zIndex: 100,
+    image: new ol.style.Circle({
+      radius: 10,
+      fill: new ol.style.Fill({
+        color: fillColor
+      }),
+      stroke: new ol.style.Stroke({
+        color: "#1668c4",
+        width: 3
+      })
+    })
+  });
+}
+
+function initMap() {
+  if (map) return;
+
+  /*
+    Vector layer that will contain your device markers.
+  */
+  layer = new ol.layer.Vector({
+    source: new ol.source.Vector()
+  });
+
+  map = new ol.Map({
+    /*
+      This matches:
+      <div id="fleet-map"></div>
+      in your HTML. The name is okay even though Leaflet is gone.
+    */
+    target: "fleet-map",
+
+    layers: [
+      /*
+        Standard OpenStreetMap basemap.
+        No API key and no CARTO watermark.
+      */
+      new ol.layer.Tile({
+        source: new ol.source.OSM()
+      }),
+
+      layer
+    ],
+
+    view: new ol.View({
+      center: ol.proj.fromLonLat([-75.35, 40.05]),
+      zoom: 9
+    })
+  });
+
+  /*
+    Click a device marker and open the existing device detail panel.
+  */
+  map.on("singleclick", event => {
+    const feature = map.forEachFeatureAtPixel(
+      event.pixel,
+      (candidate, candidateLayer) =>
+        candidateLayer === layer ? candidate : undefined
+    );
+
+    if (feature) {
+      openDetail(feature.get("deviceKey"));
+    }
+  });
+
+  /*
+    Show a pointer cursor only when hovering over a device marker.
+  */
+  map.on("pointermove", event => {
+    if (event.dragging) return;
+
+    const feature = map.forEachFeatureAtPixel(
+      event.pixel,
+      (candidate, candidateLayer) =>
+        candidateLayer === layer ? candidate : undefined
+    );
+
+    map.getTargetElement().style.cursor = feature ? "pointer" : "";
+  });
+
+  renderMap();
+}
+
+function renderMap() {
+  if (!map || !layer) return;
+
+  const source = layer.getSource();
+
+  /* Remove all previous markers before applying filters again. */
+  source.clear();
+  markersByKey = {};
+
+  const colorBy = document.getElementById("m-color").value;
+  const catF = document.getElementById("m-cat").value;
+  const commF = document.getElementById("m-comm").value;
+
+  const pts = Fleet.devices.filter(device =>
+    Number.isFinite(device.lat) &&
+    Number.isFinite(device.lng) &&
+    (!catF || device.category === catF) &&
+    (!commF || device.commStatus === commF)
+  );
+
+  const palette = MAP_COLORS[colorBy];
+
+  pts.forEach(device => {
+    const key = `${device.category}|${device.id}`;
+    const markerColor = palette[device[colorBy]] || "#888888";
+
+    /*
+      OpenLayers expects longitude first, then latitude.
+    */
+    const feature = new ol.Feature({
+      geometry: new ol.geom.Point(
+        ol.proj.fromLonLat([device.lng, device.lat])
+      )
+    });
+
+    const baseStyle = createMapMarkerStyle(markerColor);
+
+    feature.set("deviceKey", key);
+    feature.set("markerColor", markerColor);
+    feature.set("baseStyle", baseStyle);
+    feature.setStyle(baseStyle);
+
+    source.addFeature(feature);
+    markersByKey[key] = feature;
+  });
+
+  /*
+    Zoom map to include all currently visible/filter-selected devices.
+  */
+  if (pts.length > 0) {
+    map.getView().fit(source.getExtent(), {
+      padding: [40, 40, 40, 40],
+      duration: 250,
+      maxZoom: 14
+    });
+  }
+
+  /* Restore selected-device styling after filters/color selections change. */
+  if (selectedKey) {
+    highlightMarker(selectedKey);
+  }
+
+  const labelFor = key =>
+    colorBy === "category"
+      ? (catMeta(key)?.label || key)
+      : key;
+
+  document.getElementById("map-legend").innerHTML =
+    `<div class="legend">` +
+    Object.keys(palette).map(key => `
+      <div class="lg">
+        <span class="dot" style="background:${palette[key]}"></span>
+        ${labelFor(key)}
+        <span class="muted" style="margin-left:auto">
+          ${pts.filter(device => device[colorBy] === key).length}
+        </span>
+      </div>
+    `).join("") +
+    `</div>`;
+
+  const unlocated = Fleet.devices.length -
+    Fleet.devices.filter(device =>
+      Number.isFinite(device.lat) &&
+      Number.isFinite(device.lng)
+    ).length;
+
+  document.getElementById("map-stats").innerHTML =
+    `${pts.length} plotted` +
+    (
+      unlocated
+        ? `<br><span class="muted">${unlocated} device(s) have no LAT/LONG in source</span>`
+        : ""
+    );
+}
+
+/* Selected marker styling */
 function highlightMarker(key) {
   clearMarkerHighlight();
-  const m = markersByKey[key];
-  if (!m) return;
-  m.setStyle({ radius: 10, weight: 3, color: '#1668c4' });
-  m.bringToFront();
+
+  const feature = markersByKey[key];
+  if (!feature) return;
+
+  feature.setStyle(
+    createSelectedMapMarkerStyle(feature.get("markerColor"))
+  );
 }
+
 function clearMarkerHighlight() {
-  Object.values(markersByKey).forEach(m => { if (m._baseStyle) m.setStyle(m._baseStyle); });
+  Object.values(markersByKey).forEach(feature => {
+    const baseStyle = feature.get("baseStyle");
+
+    if (baseStyle) {
+      feature.setStyle(baseStyle);
+    }
+  });
 }
 
 /* ══ nav ══ */
@@ -2432,7 +2627,13 @@ function showPage(page, item) {
   document.querySelectorAll('.sb-nav .sb-item').forEach(i => i.classList.remove('active'));
   item.classList.add('active');
   document.getElementById('crumb').textContent = CRUMB[page];
-  if (page === 'map') { initMap(); setTimeout(() => map && map.invalidateSize(), 60); }
+  if (page === "map") {
+  initMap();
+
+  setTimeout(() => {
+    if (map) map.updateSize();
+  }, 60);
+}
 }
 document.querySelectorAll('.sb-nav .sb-item[data-page]').forEach(i =>
   i.addEventListener('click', () => { closeDetail(); showPage(i.dataset.page, i); }));

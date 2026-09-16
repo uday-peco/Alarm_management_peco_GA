@@ -4,8 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PECO GA Fleet</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link
+  rel="stylesheet"
+  href="https://cdn.jsdelivr.net/npm/ol@v10.6.1/ol.css"
+/>
+
+<script src="https://cdn.jsdelivr.net/npm/ol@v10.6.1/dist/ol.js"></script>
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
@@ -111,7 +115,7 @@
     <div class="page" id="page-map">
       <div class="info-note">ℹ️ Plotting every device in the repository that carries LAT/LONG values in its export. Devices without coordinates are listed in the Devices tab and counted in the panel on the right.</div>
       <div class="map-layout">
-        <div><div id="leaflet-map"></div></div>
+        <div><div id="fleet-map"></div></div>
         <div class="map-side">
           <div class="card">
             <div class="card-head"><span class="ci">◉</span><span class="card-title" style="font-size:13px">Map Filters</span></div>
